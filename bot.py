@@ -1,4043 +1,11774 @@
-import asyncio
-import io
+import subprocess
+import sys
+import time
 import re
 import json
-import html
 import os
-import httpx
+import html
 import random
-import string
-import time
-import struct
-import hmac
-import hashlib
-import base64
-from datetime import datetime, timedelta
-from telegram import (
-    Update,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
+import uuid
+import pickle
+import cloudscraper
+import requests
+import phonenumbers
+from phonenumbers import geocoder
+from bs4 import BeautifulSoup
+from datetime import datetime, date, timedelta
+from threading import Thread, Event
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import quote_plus
+import shutil
 
-# ==================== LOCAL CONFIGURATION ====================
-# This is the complete single-file bot. Replace the two placeholders below.
-# Never share this file after putting real credentials in it.
-CONFIG_BOT_TOKEN = "8743808077:AAFvLfTkNdV-2iEbAJyusZej-CLjiwnTQjU"
-CONFIG_ZENEX_API_KEY = "ZNX_0L6V54ZNXOBN0I7LYN9IRV8M"
-CONFIG_ZENEX_BASE_URL = "https://api.zenexnetwork.com"
-CONFIG_ADMIN_ID = 8298133943
-CONFIG_OTP_GROUP_ID = -5232477565
+BOT_TOKEN ="8743808077:AAHyZkSyiwODeMIAkM7hqMBOwjPi3dLD55c"
+MAIN_ADMIN_ID = 8298133943
+def create_backup(source_files, backup_dir="backups"):
+    if not os.path.exists(backup_dir):
+        os.makedirs(backup_dir, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    current_backup_dir = os.path.join(backup_dir, f"backup_{timestamp}")
+    os.makedirs(current_backup_dir, exist_ok=True)
+    
+    for file in source_files:
+        if file and os.path.exists(file):
+            try:
+                dest_path = os.path.join(current_backup_dir, os.path.basename(file))
+                if os.path.isdir(file):
+                    if os.path.exists(dest_path):
+                        shutil.rmtree(dest_path)
+                    shutil.copytree(file, dest_path)
+                else:
+                    shutil.copy2(file, current_backup_dir)
+            except Exception as e:
+                print(f"Error backing up {file}: {e}")
+    
+    
+    zip_name = f"{current_backup_dir}.zip"
+    try:
+        shutil.make_archive(current_backup_dir, 'zip', current_backup_dir)
+       
+        shutil.rmtree(current_backup_dir)
+        return zip_name
+    except Exception as e:
+        print(f"Error zipping backup: {e}")
+        return current_backup_dir
 
-# Premium copy button (PTB 21+)
-try:
-    from telegram import CopyTextButton
-    HAS_COPY_BTN = True
-except ImportError:
-    HAS_COPY_BTN = False
+class BackupManager:
+    def create_backup(self):
+        
+        files_to_backup = []
+        for var in ['SETTINGS_FILE', 'SESSIONS_FILE', 'USERS_FILE', 'ADMINS_FILE', 'GROUPS_FILE', 'COUNTRIES_FILE', 'CHANNELS_FILE']:
+            val = globals().get(var)
+            if val: files_to_backup.append(val)
+        
+        
+        if os.path.exists("database"): files_to_backup.append("database")
+        
+        return create_backup(files_to_backup)
+    
+    def restore_backup(self, zip_path):
+        return False
 
-# ==================== CONFIG SECTION ====================
+backup_manager = BackupManager()
 
-# Credentials are configured above in this same file.
-# Environment variables override these values when provided.
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() or CONFIG_BOT_TOKEN.strip()
-USER_DATA_FILE = "users.json"
-PAID_SMS_FILE = "paid_sms.json"
-STATS_FILE = "user_stats.json"
-REFERRAL_DATA_FILE = "referral_data.json"
-BANNED_USERS_FILE = "banned_users.json"
-WITHDRAW_DATA_FILE = "withdraw_requests.json"
-ACTIVITY_LOGS_FILE = "activity_logs.json"
-DATA_RANGE_FILE = "datarange.json"
-SETTINGS_FILE = "settings.json"
+def list_backups(backup_dir="backups"):
+   
+    if not os.path.exists(backup_dir):
+        return []
+    return sorted([d for d in os.listdir(backup_dir) if os.path.isdir(os.path.join(backup_dir, d))], reverse=True)
 
-BOT_USERNAME = None  # set at runtime via post_init
 
-# ==================== ADMIN CONFIGURATION ====================
-# Set the primary admin ID only here.
-# Additional admins can still be added from the Bot Settings menu.
-ADMIN_ID = int(os.getenv("ADMIN_ID", str(CONFIG_ADMIN_ID or "6907359862")))
-ADMINS = [ADMIN_ID]
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 
-OTP_GROUP_ID = int(os.getenv("OTP_GROUP_ID", str(CONFIG_OTP_GROUP_ID or "-1003941189680")))
+SETTINGS_FILE = "ii287.json"
+SESSIONS_FILE = "limogpt.json"
+def get_country_flags(country_name):
+    
+    country_name_lower = country_name.lower()
+    flags = {
+        "egypt": "<tg-emoji emoji-id='5976310790381115423'>🇪🇬</tg-emoji>", "libya": "🇱🇾", "syria": "🇸🇾", "iraq": "<tg-emoji emoji-id='5976458232313420307'>🇮🇶</tg-emoji>", "saudi": "<tg-emoji emoji-id='5976726495970729818'>🇸🇦</tg-emoji>",
+        "yemen": "<tg-emoji emoji-id='5976685311529327157'>🇾🇪</tg-emoji>", "jordan": "🇯🇴", "uae": "🇦🇪", "kuwait": "🇰🇼", "qatar": "🇶🇦",
+        "oman": "🇴🇲", "bahrain": "🇧🇭", "lebanon": "🇱🇧", "palestine": "🇵🇸", "algeria": "🇩🇿",
+        "morocco": "🇲🇦", "tunisia": "🇹🇳", "sudan": "🇸🇩", "somalia": "🇸🇴", "djibouti": "🇩🇯",
+        "mauritania": "🇲🇷", "liber": "🇱🇾", "مصر": "<tg-emoji emoji-id='5976310790381115423'>🇪🇬</tg-emoji>", "ليبيا": "🇱🇾", "سوريا": "🇸🇾",
+        "العراق": "<tg-emoji emoji-id='5976458232313420307'>🇮🇶</tg-emoji>", "السعودية": "<tg-emoji emoji-id='5976726495970729818'>🇸🇦</tg-emoji>", "اليمن": "<tg-emoji emoji-id='5976685311529327157'>🇾🇪</tg-emoji>", "الأردن": "🇯🇴", "الإمارات": "🇦🇪",
+        "الكويت": "🇰🇼", "قطر": "🇶🇦", "عمان": "🇴🇲", "البحرين": "🇧🇭", "لبنان": "🇱🇧",
+        "فلسطين": "🇵🇸", "الجزائر": "🇩🇿", "المغرب": "🇲🇦", "تونس": "🇹🇳", "السودان": "🇸🇩",
+        "الصومال": "🇸🇴", "جيبوتي": "🇩🇯", "موريتانيا": "🇲🇷"
+    }
+    for name, flag in flags.items():
+        if name in country_name_lower:
+            return flag
+    return "🌐"
 
-# ==================== PREMIUM EMOJI MAPPING ====================
+def load_env():
+    
+    if os.path.exists('.env'):
+        with open('.env', 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key.strip()] = value.strip()
 
-EMOJI_ID_MAP = {
-    "telegram": "5271801931814165886", "instagram": "5269682734820777950",
-    "facebook": "5269427536453984598", "tiktok": "5271527792641595125",
-    "x": "5269500885905468781",        "whatsapp": "5271536803482981220",
-    "up": "5244837092042750681",        "down": "5246762912428603768",
-    "add": "5397916757333654639",       "setting": "5341715473882955310",
-    "1st": "5440539497383087970",       "2st": "5447203607294265305",
-    "3rd": "5453902265922376865",       "free": "5406756500108501710",
-    "msg": "5253742260054409879",       "link": "5271604874419647061",
-    "status": "5231200819986047254",    "home": "5416041192905265756",
-    "gift_box": "5970074171449808121",  "delete": "5422557736330106570",
-    "number_change": "5267295703666824255", "refer_btn": "5420396762189831222",
-    "get_number_btn": "5375338737028841420", "cross": "5420130255174145507",
-    "stop": "5956074558044770726",      "ban": "5420323339723881652",
-    "loading": "5386367538735104399",   "profile": "5352861489541714456",
-    "done": "6298670698948724690",      "otp_success": "5190781475468915802",
-    "nagad": "5352985330628730418",     "bkash": "5348469219761626211",
-    "rocket": "5346042941196507141",    "binance": "5348212415077064131",
-    "live": "5355102594886833928",      "developer": "5267294466716244344",
-    "channel": "6215074610845585917",   "copy": "5429483843541284898",
-    "admin": "5350396951407895212",     "waiting": "6217721388736712699",
-    "back": "5267490665117275176",      "leader_board": "5280769763398671636",
-    "money": "6233367447789899509",     "discord": "5807892405306791778",
-    "custom_range": "5231012545799666522", "paypal": "5107533253946901363",
-    "imo": "5337155807752524558",       "hi": "5353027129250453493",
-    "off": "5352974971167611327",       "diamond": "5251562950698759162",
-    "broadcast": "5251671501702196837", "key": "5296369303661067030",
-    "bot_logo": "4943094697238201446",  "tk": "5201873447554145566",
-    "roket": "5188481279963715781",     "all_done": "5859265295113261399",
-    "yes": "5875017993909440887",       "no": "5875005555684152921",
-    "fire_love": "5864093929275658617",
+load_env()
+
+
+
+DEFAULT_SETTINGS = {
+    "GROUP": {
+        "name": "GROUP",
+        "accounts": [
+            {
+                "id": str(uuid.uuid4()),
+                "username": "Yousseffh123",
+                "password": "Yousseffh123"
+            }
+        ],
+        "base_url": "http://139.99.63.204",
+        "login_page_url": "http://139.99.63.204/ints/login",
+        "login_post_url": "http://139.99.63.204/ints/signin",
+        "ajax_path": "/ints/agent/res/data_smscdr.php",
+        "check_interval": 5,
+        "timeout": 30,
+        "enabled": True
+    },
+    "Fly sms": {
+        "name": "Fly sms",
+        "accounts": [
+            {
+                "id": str(uuid.uuid4()),
+                "username": "ud08",
+                "password": "aud$$"
+            }
+        ],
+        "base_url": "http://193.70.33.154",
+        "login_page_url": "http://193.70.33.154/ints/login",
+        "login_post_url": "http://193.70.33.154/ints/signin",
+        "ajax_path": "/ints/agent/res/data_smscdr.php",
+        "check_interval": 1,
+        "timeout": 60,
+        "enabled": True
+    },
+    "Number_Panel": {
+        "name": "Number Panel",
+        "accounts": [
+            {
+                "id": "SFBTR0ZBUzRWkE9Xd2GRVIeViIVBk3BpXnCTiElodkFhVWFYdYOLZA==",
+                "api_token": "SFBTR0ZBUzRWkE9Xd2GRVIeViIVBk3BpXnCTiElodkFhVWFYdYOLZA=="
+            }
+        ],
+        "base_url": "http://147.135.212.197/crapi/st/viewstats",
+        "check_interval": 5,
+        "timeout": 30,
+        "enabled": True
+    },
+    "Bolt": {
+        "name": "Bolt",
+        "accounts": [
+            {
+                "id": str(uuid.uuid4()),
+                "username": "abuar113",
+                "password": "abuun_Z113"
+            }
+        ],
+        "base_url": "http://93.190.143.35/ints",
+        "login_page_url": "http://93.190.143.35/ints/Login",
+        "login_post_url": "http://93.190.143.35/ints/signin",
+        "ajax_path": "/agent/res/data_smscdr.php",
+        "check_interval": 5,
+        "timeout": 30,
+        "enabled": True
+    },
+    "iVASMS": {
+        "name": "iVAS SMS",
+        "accounts": [
+            {
+                "id": str(uuid.uuid4()),
+                "username": "micahc7@gmail.com",
+                "password": "12011",
+                "api_key": "sk_4b5ff02b42635e4c4891bd5d2f8fcb7aff2f7af6d5daecf8498ba91092dfcbb6"
+            }
+        ],
+        "api_url": "https://maroon-wombat-183778.hostingersite.com/apiivasms/api.php",
+        "check_interval": 5,
+        "timeout": 15,
+        "enabled": True
+    },
+    "MSI": {
+        "name": "MSI",
+        "accounts": [
+            {
+                "id": str(uuid.uuid4()),
+                "username": "Yo123X",
+                "password": "ef64"
+            }
+        ],
+        "base_url": "http://145.239.130.45/ints",
+        "login_page_url": "http://145.239.130.45/ints/login",
+        "login_post_url": "http://145.239.130.45/ints/signin",
+        "ajax_path": "/agent/res/data_smscdr.php",
+        "check_interval": 5,
+        "timeout": 30,
+        "enabled": True
+    },
+    "proton SMS": {
+        "name": "proton SMS",
+        "accounts": [
+            {
+                "id": str(uuid.uuid4()),
+                "username": "LLL",
+                "password": "ELL"
+            }
+        ],
+        "base_url": "http://109.236.84.81/ints",
+        "login_page_url": "http://109.236.84.81/ints/login",
+        "login_post_url": "http://109.236.84.81/ints/signin",
+        "ajax_path": "/agent/res/data_smscdr.php",
+        "check_interval": 5,
+        "timeout": 60,
+        "enabled": True
+    },
+    "IMS": {
+        "name": "IMS",
+        "accounts": [
+            {
+                "id": str(uuid.uuid4()),
+                "username": "Ahmone",
+                "password": "98"
+            }
+        ],
+        "base_url": "http://45.82.67.20",
+        "login_page_url": "http://45.82.67.20/ints/login",
+        "login_post_url": "http://45.82.67.20/ints/signin",
+        "ajax_path": "/ints/agent/res/data_smscdr.php",
+        "check_interval": 16,
+        "timeout": 30,
+        "enabled": True
+    },
+    "Roxy SMS": {
+        "name": "Roxy SMS",
+        "accounts": [
+            {
+                "id": str(uuid.uuid4()),
+                "username": "sool",
+                "password": "Yo123"
+            }
+        ],
+        "base_url": "http://www.roxysms.net",
+        "login_page_url": "http://www.roxysms.net/Login",
+        "login_post_url": "http://www.roxysms.net/signin",
+        "ajax_path": "/agent/res/data_smscdr.php",
+        "check_interval": 5,
+        "timeout": 30,
+        "enabled": True,
+        "use_scraper": True
+    },
+    "TimeSMS": {
+        "name": "TimeSMS",
+        "accounts": [
+            {
+                "id": str(uuid.uuid4()),
+                "username": "a",
+                "password": "7"
+            }
+        ],
+        "base_url": "https://timesms.org",
+        "login_page_url": "https://timesms.org/login",
+        "login_post_url": "http://timesms.org/signin",
+        "ajax_path": "/agent/res/data_smscdr.php",
+        "check_interval": 5,
+        "timeout": 30,
+        "enabled": True
+    }
 }
 
-FALLBACK_EMOJI_MAP = {
-    "telegram": "\u2708\ufe0f", "instagram": "\U0001f4f7", "facebook": "\U0001f535",
-    "tiktok": "\U0001f3b5", "x": "\u274c", "whatsapp": "\U0001f4ac",
-    "up": "\U0001f4c8", "down": "\U0001f4c9", "add": "\u2795", "setting": "\u2699\ufe0f",
-    "1st": "\U0001f947", "2st": "\U0001f948", "3rd": "\U0001f949", "free": "\U0001f193",
-    "msg": "\U0001f4ac", "link": "\U0001f517", "status": "\U0001f4ca", "home": "\U0001f3e0",
-    "gift_box": "\U0001f381", "delete": "\U0001f5d1\ufe0f", "number_change": "\U0001f504",
-    "get_number_btn": "\U0001f4de", "cross": "\u274c", "stop": "\U0001f6d1",
-    "ban": "\U0001f6ab", "loading": "\u23f3", "profile": "\U0001f464", "done": "\u2705",
-    "otp_success": "\u2b50", "nagad": "\U0001f7e0", "bkash": "\U0001f496",
-    "rocket": "\U0001f680", "binance": "\U0001f7e1", "live": "\U0001f7e2",
-    "developer": "\U0001f468\u200d\U0001f4bb", "channel": "\U0001f4e2",
-    "copy": "\U0001f4cb", "admin": "\U0001f451", "waiting": "\u23f3", "back": "\U0001f519",
-    "leader_board": "\U0001f3c6", "custom_range": "\U0001f3af", "refer_btn": "\U0001f517",
-    "paypal": "\U0001f4b3", "imo": "\U0001f4ac", "hi": "\U0001f44b", "off": "\U0001f6d1",
-    "diamond": "\U0001f48e", "broadcast": "\U0001f4e2", "key": "\U0001f511", "tk": "\u09f3",
-    "roket": "\U0001f680", "all_done": "\u2705", "yes": "\u2714\ufe0f", "no": "\u274c",
-    "fire_love": "\u2764\ufe0f",
-}
+def migrate_old_settings(settings):
+    migrated = False
+    for site_key in ["GROUP", "Fly sms", "Number_Panel", "Bolt", "iVASMS", "MSI", "proton SMS", "IMS", "Roxy SMS", "TimeSMS"]:
+        if site_key in settings:
+            if "username" in settings[site_key] and "accounts" not in settings[site_key]:
+                old_username = settings[site_key]["username"]
+                old_password = settings[site_key]["password"]
+                settings[site_key]["accounts"] = [
+                    {
+                        "id": str(uuid.uuid4()),
+                        "username": old_username,
+                        "password": old_password
+                    }
+                ]
+                del settings[site_key]["username"]
+                del settings[site_key]["password"]
+                migrated = True
+            
+            if settings[site_key].get("check_interval", 5) == 7:
+                settings[site_key]["check_interval"] = 5
+                migrated = True
+                print(f"✅ تحديث سرعة {site_key} من 7 إلى 5 ثواني")
+    
+    if "iVASMS" not in settings:
+        settings["iVASMS"] = DEFAULT_SETTINGS["iVASMS"].copy()
+        migrated = True
+        print("✅ تم إضافة موقع iVASMS للإعدادات")
+    
+    if "MSI" not in settings:
+        settings["MSI"] = DEFAULT_SETTINGS["MSI"].copy()
+        migrated = True
+    
+    if "proton SMS" not in settings:
+        settings["proton SMS"] = DEFAULT_SETTINGS["proton SMS"].copy()
+        migrated = True
+    
+    if "IMS" not in settings:
+        settings["IMS"] = DEFAULT_SETTINGS["IMS"].copy()
+        migrated = True
 
-PREMIUM_FLAGS = {
-    "\U0001f1fa\U0001f1f8": "5913463998522592692",
-    "\U0001f1fa\U0001f1e6": "5911406692007941050",
-    "\U0001f1f5\U0001f1f1": "5913550391789752571",
-    "\U0001f1f0\U0001f1ff": "5913724621433082323",
-    "\U0001f1e6\U0001f1ff": "5911197578640233518",
-    "\U0001f1ea\U0001f1fa": "5911106310585193018",
-    "\U0001f1e6\U0001f1f2": "5913272455866093666",
-    "\U0001f1f7\U0001f1fa": "5913274246867456342",
-    "\U0001f1fa\U0001f1ff": "5911051846104912282",
-    "\U0001f1e9\U0001f1ea": "5911096835887337583",
-    "\U0001f1ef\U0001f1f5": "5913293711659241040",
-    "\U0001f1f9\U0001f1f7": "5910995113881901195",
-    "\U0001f1e7\U0001f1fe": "5911011185649521599",
-    "\U0001f1ec\U0001f1e7": "5913443365499703513",
-    "\U0001f1ee\U0001f1f3": "5913754823643107921",
-    "\U0001f1e7\U0001f1f7": "5911148568768418614",
-    "\U0001f1fe\U0001f1ea": "5913346492512341993",
-    "\U0001f1fb\U0001f1f3": "5913428887164949581",
-    "\U0001f1e6\U0001f1ea": "5913726554168365343",
-    "\U0001f1fa\U0001f1ec": "5913488939397681980",
-    "\U0001f1f9\U0001f1f2": "5913315521503170180",
-    "\U0001f1f9\U0001f1f3": "5911332947419468671",
-    "\U0001f1f9\U0001f1ed": "5913617968805187987",
-    "\U0001f1f9\U0001f1ff": "5911418949844603556",
-    "\U0001f1f8\U0001f1ea": "5911156510162949403",
-    "\U0001f1f8\U0001f1e9": "5911387497799094470",
-    "\U0001f1ea\U0001f1f8": "5911193287967904547",
-    "\U0001f1f1\U0001f1f0": "5911293163137406640",
-    "\U0001f1ff\U0001f1e6": "5911203119148044594",
-    "\U0001f1f8\U0001f1ec": "5911531460808051849",
-    "\U0001f1f7\U0001f1f8": "5913592598433369871",
-    "\U0001f1f8\U0001f1f3": "5910995302860461643",
-    "\U0001f1f6\U0001f1e6": "5911260864983339619",
-    "\U0001f1f5\U0001f1f9": "5911023653939581472",
-    "\U0001f1f5\U0001f1ed": "5911268638874145162",
-    "\U0001f1f5\U0001f1ea": "5911207993935925780",
-    "\U0001f1f5\U0001f1f0": "5913705895375672082",
-    "\U0001f1f4\U0001f1f2": "5913570801474343473",
-    "\U0001f1f3\U0001f1f4": "5913617397574537046",
-    "\U0001f1f3\U0001f1ec": "5911143844304393105",
-    "\U0001f1f3\U0001f1ff": "5913640044937089340",
-    "\U0001f1f3\U0001f1f1": "5913367645226275100",
-    "\U0001f1f3\U0001f1f5": "5913496520014958723",
-    "\U0001f1f2\U0001f1e6": "5911482111633658301",
-    "\U0001f1f2\U0001f1f3": "5911041383564580038",
-    "\U0001f1f2\U0001f1e9": "5913456847402045950",
-    "\U0001f1f2\U0001f1fd": "5913687302462246518",
-    "\U0001f1f2\U0001f1fe": "5913654360063087453",
-    "\U0001f1f0\U0001f1ea": "5911154710571651231",
-    "\U0001f1f1\U0001f1f9": "5911172315642597775",
-    "\U0001f1f1\U0001f1fb": "5913738489882480243",
-    "\U0001f1f1\U0001f1e7": "5911504273664905447",
-    "\U0001f1ee\U0001f1e9": "5913479361620611038",
-    "\U0001f1ee\U0001f1f7": "5911308891307643032",
-    "\U0001f1ee\U0001f1f6": "5911382442622587735",
-    "\U0001f1ee\U0001f1f1": "5911471936856134692",
-    "\U0001f1ee\U0001f1f9": "5913688444923547525",
-    "\U0001f1ed\U0001f1fa": "5913767635530551104",
-    "\U0001f1ec\U0001f1f7": "5911210399117611448",
-    "\U0001f1ec\U0001f1ed": "5913391155877252952",
-    "\U0001f1ec\U0001f1ea": "5913434771270144023",
-    "\U0001f1eb\U0001f1f7": "5913605586414473124",
-    "\U0001f1eb\U0001f1ee": "5911041344909873378",
-    "\U0001f1ea\U0001f1f9": "5911078333168227043",
-    "\U0001f1ea\U0001f1ec": "5913694831539916769",
-    "\U0001f1e9\U0001f1f0": "5911206009661034712",
-    "\U0001f1e8\U0001f1fe": "5911023550860366409",
-    "\U0001f1ed\U0001f1f7": "5913692684056269311",
-    "\U0001f1e8\U0001f1f3": "5913779335021466780",
-    "\U0001f1e7\U0001f1e9": "5911365056594973179",
-    "\U0001f1e7\U0001f1ea": "5913529642802745141",
-    "\U0001f1e6\U0001f1fa": "5913632326880858455",
-    "\U0001f1e6\U0001f1f9": "5911338831524664592",
-    "\U0001f1e6\U0001f1f7": "5913573356979884082",
-    "\U0001f1f0\U0001f1f7": "5913371673905598425",
-    "\U0001f1f8\U0001f1e6": "4985897134424328239",
-    "\U0001f1e8\U0001f1f4": "5913773060074246009",
-    "\U0001f1e8\U0001f1f1": "5911470957603592832",
-    "\U0001f1ff\U0001f1f2": "5913564754160389778",
-}
+    if "Roxy SMS" not in settings:
+        settings["Roxy SMS"] = DEFAULT_SETTINGS["Roxy SMS"].copy()
+        migrated = True
 
-def get_tg_emoji(key, default_char=""):
-    emoji_id = EMOJI_ID_MAP.get(key)
-    fallback = default_char or FALLBACK_EMOJI_MAP.get(key, "\u2b50")
-    if emoji_id:
-        return f'<tg-emoji emoji-id="{emoji_id}">{fallback}</tg-emoji>'
-    return fallback
-
-def get_country_tg_flag(flag_emoji):
-    emoji_id = PREMIUM_FLAGS.get(flag_emoji)
-    if emoji_id:
-        return f'<tg-emoji emoji-id="{emoji_id}">{flag_emoji}</tg-emoji>'
-    return f'<tg-emoji emoji-id="5911106310585193018">{flag_emoji}</tg-emoji>'
-
-# ==================== CUSTOM PREMIUM EMOJI MAP (user-supplied IDs) ====================
-# char -> premium custom emoji id. Used by pe() to auto-upgrade plain emoji
-# inside HTML-formatted messages to premium versions.
-CUSTOM_EMOJI_MAP = {
-    "🍂": "6098241269782288407", "🚬": "6097927578255890571", "🥃": "6098326065321613233",
-    "✅": "6097949525538772310", "🔥": "6100575060521653786", "😂": "6100194178526880063",
-    "🤪": "6098305780191073971", "☠️": "6098000309232081114", "🩷": "6098216990332163722",
-    "🤣": "6097986153019873224", "😪": "6100541727280469939", "😊": "6098370329254567380",
-    "🙂": "6098318970035640370", "👍": "6098365012085053396", "🌸": "6098243924072077483",
-    "❤️": "6097989086482537185", "🌟": "6098375466035452160", "🤍": "6100531780136213332",
-    "🤩": "6098245534684812941", "🥹": "6098357714935617432", "😀": "6100253363176217244",
-    "😁": "6098196881295283699", "✨": "6100515132842976120", "💝": "6100416443084446928",
-    "🌚": "6098344091299354241", "🙄": "6098082446186649920", "🥲": "6098074002280949521",
-    "😞": "6098066408778766256", "😯": "6098022247925028490", "🌹": "6100380554337721941",
-    "💋": "6097965451277506233", "😘": "6097883868373721404", "⛩️": "6098365660625114734",
-    "🇮🇳": "6098012116097177946", "👀": "6098136562774579060", "☄️": "6098059974917756947",
-    "⚡️": "6100400465806104855", "🛍": "6100685986642008156", "⛔️": "6098265420383395525",
-    "🚫": "6100388225149310843", "❗️": "6098049430773045795", "‼️": "6100387306026309394",
-    "⁉️": "6100207381256345481", "❓": "6100520888099149405", "⚠️": "6098337704682984714",
-    "🌐": "6098236425059178463", "💬": "6097930030682215910", "💭": "6098072155445007587",
-    "📊": "6097979946792130160", "🔼": "6100241633620531535", "🔽": "6097896650196391648",
-    "🕯": "6098278966710245155", "📈": "6098163741327629439", "📉": "6098266184887572126",
-    "✔️": "6098360833081874496", "❌": "6100304499056844996", "🆒": "6097928956940392722",
-    "🔔": "6098419394960955857", "🥸": "6098199638664288273", "🤡": "6098228183016937964",
-    "🫦": "6098267606521747665", "📌": "6098387861311068868", "💵": "6100353049367157461",
-    "💸": "6098101064869893253", "💱": "6100386769155397563", "▶️": "6098132224857610496",
-    "🔴": "6100258190719457801", "🟢": "6100670735213139506", "➡️": "6098240488098240166",
-    "💥": "6098409379097229044", "🎙": "6097944964283504492", "🎤": "6097912756323751274",
-    "📣": "6100239245618716687", "🤫": "6098175097221158343", "👎": "6098025074013508495",
-    "🗣️": "6098018421109168142", "🔍": "6098031288831187632", "🛡": "6100129320225741245",
-    "🔗": "6100307857721267700", "🖥": "6097957028846638291", "©": "6098365772294264878",
-    "ℹ️": "6100619775426173201", "❄️": "6091423846718510311", "🤴": "6269153634991214569",
-    "✉️": "6269255258212404947", "✈️": "6165465711352223465", "😎": "6147552742790405148",
-    "🍏": "6271378634208974347", "🎮": "6269171759753203605", "💳": "6129870117619634982",
-    "🛒": "6257812301399725616", "🥇": "6269400956387987689", "🎖️": "6269232765468676321",
-    "💎": "6271537028307881531", "👮": "6271387924223234127", "👮‍♂️": "6271824284310573725",
-    "💼": "6271788773520970269", "⚜️": "6271332888512303608", "👑": "6269556155031228243",
-    "⚜": "6293958243651686529", "👨‍🏫": "6271814813907685528", "💙": "6269557847248342937",
-    "👩‍💻": "6269458311381258421", "📎": "6269304938099118422", "✈": "6262597302989362227",
-    "🔑": "6176966310920983412", "🏷": "6260059243605398502", "🏆": "6194737030165959506",
-    "✅️": "6283084125192590161", "📸": "6280525956771745921", "🤔": "6147625684219993899",
-    "🇺🇿": "6147770549171918136", "⬇️": "6271712920103555728", "😬": "6269253325477123346",
-    "💘": "6269180384047533905", "👉": "6158862632926319619", "⏩": "6269290077512274929",
-    "🎚": "6260264603171689263", "❤️‍🔥": "6174589037932712505", "🎥": "6158973722255429425",
-    "🔜": "6089104521428997572", "🥳": "6269223265001017592", "😮": "6269194596094317437",
-    "😭": "6269316311172518259", "⏬": "6156513311585211842", "🚨": "6257780484281997093",
-    "😢": "6269245551586316810", "🆘": "6118474036080021585", "🛑": "6271674836628541366",
-    "🔸": "6150014626634405643",
-}
-_CUSTOM_EMOJI_KEYS = sorted(CUSTOM_EMOJI_MAP.keys(), key=len, reverse=True)
-_TAG_SPLIT_RE = re.compile(r'(<[^>]+>)')
-
-def _wrap_plain_segment(segment):
-    out, i, n = [], 0, len(segment)
-    while i < n:
-        for k in _CUSTOM_EMOJI_KEYS:
-            if segment.startswith(k, i):
-                out.append(f'<tg-emoji emoji-id="{CUSTOM_EMOJI_MAP[k]}">{k}</tg-emoji>')
-                i += len(k)
-                break
-        else:
-            out.append(segment[i])
-            i += 1
-    return ''.join(out)
-
-def pe(text):
-    """Auto-upgrade plain emoji in an HTML-formatted string to premium tg-emoji,
-    without touching text/emoji that are already inside an existing HTML tag."""
-    if not text:
-        return text
-    parts = _TAG_SPLIT_RE.split(text)
-    out, in_tg_emoji = [], False
-    for part in parts:
-        if part.startswith('<tg-emoji'):
-            in_tg_emoji = True
-            out.append(part)
-        elif part == '</tg-emoji>':
-            in_tg_emoji = False
-            out.append(part)
-        elif part.startswith('<') and part.endswith('>'):
-            out.append(part)
-        elif in_tg_emoji:
-            out.append(part)
-        else:
-            out.append(_wrap_plain_segment(part))
-    return ''.join(out)
-
-# ==================== SYSTEM DYNAMIC SETTINGS ====================
-
-_settings_cache = None
+    if "TimeSMS" not in settings:
+        settings["TimeSMS"] = DEFAULT_SETTINGS["TimeSMS"].copy()
+        migrated = True
+    
+    if "Share" in settings and "proton SMS" not in settings:
+        settings["proton SMS"] = settings["Share"].copy()
+        settings["proton SMS"]["name"] = "proton SMS"
+        del settings["Share"]
+        migrated = True
+    elif "Share" in settings:
+        del settings["Share"]
+        migrated = True
+    
+    return settings, migrated
 
 def load_settings():
-    global _settings_cache
-    if _settings_cache is not None:
-        return _settings_cache
-    default = {
-        "active_panel": "zenex",
-        "zenex_api_key": os.getenv("ZENEX_API_KEY", "").strip() or CONFIG_ZENEX_API_KEY.strip(),
-        "zenex_base_url": os.getenv("ZENEX_BASE_URL", CONFIG_ZENEX_BASE_URL),
-        "panel_url": f"https://t.me/Zenex_Number_bot?start={ADMIN_ID}",
-        "allowed_services": ["Instagram","Facebook","WhatsApp","TikTok","Telegram","Discord","PayPal","Imo"],
-        "otp_group_url": "https://t.me/+31eV11IT7WQzMjI9",
-        "channel_url": "https://t.me/MinoXofficial0",
-        "support_username": "@support",
-        "maintenance_mode": False,
-        "cooldown_time": 1.0,
-        "min_withdraw": 50.0,
-        "otp_bonus": 0.20,
-        "referral_bonus": 0.0,
-        "admins": [ADMIN_ID],
-        "owners": [ADMIN_ID],
-        "otp_group_chat_id": None,
-        "force_join_channel": None,
-        "manual_services": [],
-    }
-    if not os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, "w") as f:
-            json.dump(default, f, indent=4)
-        _settings_cache = default
-        return default
-    try:
-        with open(SETTINGS_FILE, "r") as f:
-            data = json.load(f)
-        updated = False
-        for k, v in default.items():
-            if k not in data:
-                data[k] = v; updated = True
-        if updated:
-            with open(SETTINGS_FILE, "w") as f:
-                json.dump(data, f, indent=4)
-        _settings_cache = data
-        return data
-    except Exception:
-        _settings_cache = default
-        return default
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+                settings, migrated = migrate_old_settings(settings)
+                if migrated:
+                    save_settings(settings)
+                return settings
+        except:
+            pass
+    return DEFAULT_SETTINGS.copy()
 
 def save_settings(settings):
-    global _settings_cache
-    _settings_cache = settings
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(settings, f, indent=4)
+    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(settings, f, indent=2, ensure_ascii=False)
 
-def clean_base_url(url):
-    url = str(url).strip().rstrip('/')
-    url = re.sub(r'(/v1|/api|/api/v1)$', '', url)
-    return url.rstrip('/')
+def get_site_accounts(site_key):
+    return SETTINGS.get(site_key, {}).get("accounts", [])
 
-def get_api_credentials():
-    settings = load_settings()
-    env_api_key = os.getenv("ZENEX_API_KEY", "").strip() or CONFIG_ZENEX_API_KEY.strip()
-    configured_api_key = str(settings.get("zenex_api_key", "")).strip()
-    return (env_api_key or configured_api_key,
-            clean_base_url(settings.get("zenex_base_url","https://api.zenexnetwork.com")))
-
-def get_api_urls(base_url):
-    base = str(base_url).strip().rstrip('/')
-    return {"getnum": f"{base}/v1/getnum",
-            "liveaccess": f"{base}/v1/active-ranges",
-            "otp": f"{base}/v1/numsuccess/info"}
-
-def get_api_headers(api_key):
-    return {"mapikey": api_key}
-
-# ==================== WELCOME MESSAGE CONFIGURATION ====================
-def get_welcome_message():
-    rocket = get_tg_emoji("rocket")
-    sparkle = get_tg_emoji("otp_success")
-    return (
-        f"{sparkle} 𝗪𝗘𝗟𝗖𝗢𝗠𝗘 𝗧𝗢 TEST BOT{rocket} {sparkle} \n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{rocket} Enjoy Premium Quality Service {rocket}"
-    )
-
-# ==================== OTP RATE CONFIGURATION ====================
-OTP_RATE = 0.20
-
-# ==================== REFERRAL / WITHDRAW CONFIGURATION ====================
-REFERRAL_PRICE = 0
-MIN_WITHDRAW = 50
-MAX_WITHDRAW = 10000
-
-# ==================== SUPPORT & DEVELOPER LINKS ====================
-SUPPORT_LINK = "https://t.me/DEM_Support_Chat"      # আপনার সাপোর্ট লিংক দিন
-DEVELOPER_LINK = "https://t.me/Davil_Raju"          # আপনার ডেভেলপার লিংক দিন
-
-request_queue = asyncio.Queue()
-MAX_WORKERS = max(1, int(os.getenv("MAX_WORKERS", "20")))
-
-client_async = httpx.AsyncClient(
-    http2=True,
-    timeout=httpx.Timeout(8.0, connect=2.0, read=5.0),
-    limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
-    trust_env=False,
-)
-
-active_numbers = {}
-last_range = {}
-CHECK_INTERVAL = 1.5
-number_assignment_lock = asyncio.Lock()
-
-# ==================== ZENEXA RANGES CACHE ====================
-_ranges_cache = {"data": None, "updated_at": 0.0, "fetching": False}
-
-def get_app_emoji_id(app_name):
-    n = app_name.lower()
-    # Ordered: longer/more-specific names first to avoid partial-match errors
-    SERVICE_EMOJI_MAP = [
-        ("whatsapp business", "5336814486701514414"),
-        ("whatsapp",          "5334759662677957452"),
-        ("telegram",          "5337010556253543833"),
-        ("facebook",          "5334807341109908955"),
-        ("instagram",         "5334868205091459431"),
-        ("amazon prime",      "6111801057061374810"),
-        ("amazon",            "4995019580536524226"),
-        ("imo",               "5337155807752524558"),
-        ("apple",             "5334637951894722661"),
-        ("google",            "5335010201005231986"),
-        ("microsoft",         "5334880948259427772"),
-        ("teams",             "5334590977837403844"),
-        ("tiktok",            "5339213256001102461"),
-        ("bkash",             "5348469219761626211"),
-        ("bybit",             "5348372939479751825"),
-        ("binance",           "5348212415077064131"),
-        ("melbet",            "5337102391244263212"),
-        ("snapchat",          "5359441366554255082"),
-        ("uber",              "5298715455316303708"),
-        ("paypal",            "5776103539872896061"),
-        ("discord",           "5116246243646898866"),
-        ("viber",             "5463060437572528782"),
-        ("linkedin",          "6224222994265279792"),
-        ("line",              "5399818044866327279"),
-        ("wechat",            "5782757599560602950"),
-        ("twitter",           "5215726959056662534"),
-        ("reddit",            "4992421103847604984"),
-        ("pinterest",         "5346103513120258857"),
-        ("twitch",            "5233333563306301418"),
-        ("zoom",              "5881799193219043268"),
-        ("signal",            "5293998404404272267"),
-        ("slack",             "4994972469040251302"),
-        ("skype",             "4992613535562334989"),
-        ("netflix",           "6255738712664050133"),
-        ("spotify",           "5411392711146095115"),
-        ("hoichoi",           "6104822598493801746"),
-        ("daraz",             "5336879280578138635"),
-        ("foodpanda",         "5336879280578138635"),
-        ("pathao",            "5336879280578138635"),
-        ("aliexpress",        "5336879280578138635"),
-        ("shopee",            "5336879280578138635"),
-        ("payoneer",          "5336879280578138635"),
-        ("wise",              "5336879280578138635"),
-        ("chatgpt",           "5296516998996445955"),
-        ("notion",            "5336879280578138635"),
-        ("github",            "5417836094098007862"),
-        ("canva",             "5111661409008092227"),
-        ("figma",             "5336879280578138635"),
-        ("upwork",            "5336879280578138635"),
-        ("fiverr",            "5336879280578138635"),
-        ("yahoo",             "5336879280578138635"),
-        ("dropbox",           "5336879280578138635"),
-        ("coursera",          "5336879280578138635"),
-        ("duolingo",          "5336879280578138635"),
-        ("rocket",            "5346042941196507141"),
-    ]
-    for k, v in SERVICE_EMOJI_MAP:
-        if k in n:
-            return v
-    return "5861680977994060034"
-
-def get_platform_icon(platform_name):
-    return f'<tg-emoji emoji-id="{get_app_emoji_id(platform_name)}">📞</tg-emoji>'
-
-def get_clean_app_name(raw):
-    n = raw.lower().strip()
-    for k, v in [("facebook","Facebook"),("instagram","Instagram"),("whatsapp","WhatsApp"),
-                  ("tiktok","TikTok"),("paypal","PayPal"),("telegram","Telegram"),
-                  ("discord","Discord"),("imo","Imo")]:
-        if k in n: return v
-    return raw.strip().capitalize()
-
-def make_bold_text(text):
-    out = []
-    for ch in str(text):
-        o = ord(ch)
-        if 65 <= o <= 90:    out.append(chr(o - 65 + 0x1D5D4))
-        elif 97 <= o <= 122: out.append(chr(o - 97 + 0x1D5EE))
-        elif 48 <= o <= 57:  out.append(chr(o - 48 + 0x1D7EC))
-        else: out.append(ch)
-    return "".join(out)
-
-async def fetch_top55_ranges_by_app():
-    settings = load_settings()
-    api_key, base_url = get_api_credentials()
-    allowed = {s.lower() for s in settings.get("allowed_services",
-        ["Instagram","Facebook","WhatsApp","TikTok","Telegram","Discord","PayPal","Imo"])}
-    urls = get_api_urls(base_url)
-    headers = get_api_headers(api_key)
-    ranges_list = None
-    for attempt in range(2):
-        try:
-            r = await client_async.get(urls["liveaccess"], headers=headers,
-                                        timeout=httpx.Timeout(5.0, connect=1.5))
-            data = r.json()
-            ranges_list = extract_active_ranges(data)
-            if ranges_list is not None: break
-        except Exception:
-            if attempt == 0: await asyncio.sleep(0.2)
-    if ranges_list is None: return None, "Server unreachable or invalid API key."
-    if not ranges_list:     return {}, None
-    top = {}
-    for obj in ranges_list:
-        if isinstance(obj, str):
-            # Some API versions return ranges as strings.  Keep them under
-            # the generic service instead of silently dropping them.
-            rng = obj.strip()
-            service = "Unknown"
-        elif isinstance(obj, dict):
-            rng = (
-                obj.get("range") or obj.get("prefix") or
-                obj.get("range_text") or obj.get("value") or ""
-            )
-            service = (
-                obj.get("service") or obj.get("app") or
-                obj.get("application") or obj.get("service_name") or "Unknown"
-            )
-        else:
-            continue
-
-        rng = str(rng).strip().upper()
-        if not rng or not re.search(r"\d", rng):
-            continue
-        clean = get_clean_app_name(str(service))
-        # Unknown is useful for custom ranges, but configured service filters
-        # should still hide unrelated named services.
-        if clean.lower() not in allowed and clean != "Unknown":
-            continue
-        if clean not in top:
-            top[clean] = {"icon": get_platform_icon(clean), "ranges": []}
-        if rng not in top[clean]["ranges"]:
-            top[clean]["ranges"].append(rng)
-    return dict(sorted(top.items(), key=lambda x: len(x[1]["ranges"]), reverse=True)), None
-
-
-def extract_active_ranges(payload):
-    """Read active ranges from all supported API response shapes."""
-    if isinstance(payload, list):
-        return payload
-    if not isinstance(payload, dict):
-        return None
-
-    for key in (
-        "active_ranges", "activeRanges", "available_ranges",
-        "availableRanges", "ranges", "range_list",
-    ):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return value
-
-    # Newer responses may wrap the same object in data/result/response.
-    for key in ("data", "result", "response", "payload"):
-        value = payload.get(key)
-        if isinstance(value, (dict, list)):
-            nested = extract_active_ranges(value)
-            if nested is not None:
-                return nested
-
-    # A few versions return {"WhatsApp": ["880XXX", ...]}.
-    grouped = []
-    for service, values in payload.items():
-        if not isinstance(values, list):
-            continue
-        for value in values:
-            if isinstance(value, dict):
-                item = dict(value)
-                item.setdefault("service", service)
-            else:
-                item = {"service": service, "range": value}
-            grouped.append(item)
-    return grouped if grouped else None
-
-def build_app_buttons_from_cache(top):
-    btns, row, ci = [], [], 0
-    clrs = ["primary"]
-    for app_name in top:
-        row.append(InlineKeyboardButton(make_bold_text(app_name),
-            callback_data=f"sel_app_{app_name}",
-            api_kwargs={"icon_custom_emoji_id": get_app_emoji_id(app_name), "style": clrs[ci % len(clrs)]}))
-        ci += 1
-        if len(row) == 2: btns.append(row); row = []
-    if row: btns.append(row)
-    return btns
-
-async def _bg_refresh_ranges():
-    global _ranges_cache
-    while True:
-        try:
-            if not _ranges_cache["fetching"]:
-                _ranges_cache["fetching"] = True
-                try:
-                    data, _ = await fetch_top55_ranges_by_app()
-                    if data:
-                        _ranges_cache["data"] = data
-                        _ranges_cache["updated_at"] = time.monotonic()
-                except Exception: pass
-                finally: _ranges_cache["fetching"] = False
-        except Exception: pass
-        await asyncio.sleep(200)
-
-# ==================== CHECK IF USER IS ADMIN ====================
-
-def is_admin(user_id):
-    try:
-        user_id = int(user_id)
-    except (TypeError, ValueError):
+def add_account(site_key, username, password):
+    if site_key not in SETTINGS:
         return False
-    return user_id in get_admin_ids()
+    account = {
+        "id": str(uuid.uuid4()),
+        "username": username,
+        "password": password
+    }
+    if "accounts" not in SETTINGS[site_key]:
+        SETTINGS[site_key]["accounts"] = []
+    SETTINGS[site_key]["accounts"].append(account)
+    save_settings(SETTINGS)
+    return account
 
-def get_admin_ids():
-    """Return valid admin IDs, even if settings.json stored them as strings."""
-    candidates = [ADMIN_ID, CONFIG_ADMIN_ID]
-    try:
-        configured = load_settings().get("admins", [])
-        if isinstance(configured, list):
-            candidates.extend(configured)
-    except Exception as exc:
-        print(f"Support admin settings could not be loaded: {exc}")
-
-    admin_ids = []
-    for candidate in candidates:
-        try:
-            admin_id = int(candidate)
-        except (TypeError, ValueError):
-            continue
-        if admin_id > 0 and admin_id not in admin_ids:
-            admin_ids.append(admin_id)
-    return admin_ids
-
-def get_min_withdraw():
-    """Read the current minimum withdrawal from persisted bot settings."""
-    try:
-        return max(0.0, float(load_settings().get("min_withdraw", MIN_WITHDRAW)))
-    except (TypeError, ValueError):
-        return float(MIN_WITHDRAW)
-
-# ==================== WITHDRAW DATA FUNCTIONS ====================
-
-def load_withdraw_requests():
-    if not os.path.exists(WITHDRAW_DATA_FILE):
-        with open(WITHDRAW_DATA_FILE, "w") as f:
-            json.dump({}, f)
-        return {}
-    try:
-        with open(WITHDRAW_DATA_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_withdraw_requests(data):
-    with open(WITHDRAW_DATA_FILE, "w") as f:
-        json.dump(data, f, indent=4)
-
-def generate_payment_id():
-    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=20))
-
-# ==================== BANNED USERS FUNCTIONS ====================
-
-def load_banned_users():
-    if not os.path.exists(BANNED_USERS_FILE):
-        with open(BANNED_USERS_FILE, "w") as f:
-            json.dump([], f)
-        return []
-    try:
-        with open(BANNED_USERS_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return []
-
-def save_banned_users(banned_list):
-    with open(BANNED_USERS_FILE, "w") as f:
-        json.dump(banned_list, f, indent=4)
-
-def is_user_banned(uid):
-    banned_list = load_banned_users()
-    return str(uid) in banned_list
-
-def ban_user(uid):
-    banned_list = load_banned_users()
-    uid_str = str(uid)
-    if uid_str not in banned_list:
-        banned_list.append(uid_str)
-        save_banned_users(banned_list)
+def delete_account(site_key, account_id):
+    global account_stop_events
+    if site_key not in SETTINGS or "accounts" not in SETTINGS[site_key]:
+        return False
+    accounts = SETTINGS[site_key]["accounts"]
+    initial_count = len(accounts)
+    SETTINGS[site_key]["accounts"] = [acc for acc in accounts if acc["id"] != account_id]
+    if len(SETTINGS[site_key]["accounts"]) < initial_count:
+        stop_key = f"{site_key}_{account_id}"
+        if stop_key in account_stop_events:
+            account_stop_events[stop_key].set()
+            print(f"🛑 تم إيقاف مراقبة الحساب: {stop_key}")
+            del account_stop_events[stop_key]
+        
+        cookies_file = f"cookies_{site_key}_{account_id}.pkl"
+        last_message_file = f"last_message_{site_key}_{account_id}.txt"
+        sent_messages_file = f"sent_messages_{site_key}_{account_id}.json"
+        
+        for file_path in [cookies_file, last_message_file, sent_messages_file]:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    print(f"🗑️ تم حذف ملف: {file_path}")
+                except Exception as e:
+                    print(f"⚠️ خطأ في حذف {file_path}: {e}")
+        
+        if stop_key in account_sessions:
+            del account_sessions[stop_key]
+        if stop_key in account_last_seen:
+            del account_last_seen[stop_key]
+        
+        save_settings(SETTINGS)
         return True
     return False
 
-def unban_user(uid):
-    banned_list = load_banned_users()
-    uid_str = str(uid)
-    if uid_str in banned_list:
-        banned_list.remove(uid_str)
-        save_banned_users(banned_list)
-        return True
-    return False
-
-# ==================== REFERRAL DATA FUNCTIONS ====================
-
-def load_referral_data():
-    if not os.path.exists(REFERRAL_DATA_FILE):
-        with open(REFERRAL_DATA_FILE, "w") as f:
-            json.dump({}, f)
-        return {}
-    try:
-        with open(REFERRAL_DATA_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_referral_data(data):
-    with open(REFERRAL_DATA_FILE, "w") as f:
-        json.dump(data, f, indent=4)
-
-def update_referral_count(uid, count):
-    referral_data = load_referral_data()
-    uid_str = str(uid)
-    if uid_str not in referral_data:
-        referral_data[uid_str] = {"referral_count": 0}
-    referral_data[uid_str]["referral_count"] = count
-    save_referral_data(referral_data)
-
-def get_referral_count(uid):
-    referral_data = load_referral_data()
-    uid_str = str(uid)
-    return referral_data.get(uid_str, {}).get("referral_count", 0)
-
-# ==================== DATA RANGE FILE ====================
-
-def load_range_db():
-    if not os.path.exists(DATA_RANGE_FILE):
-        return {}
-    try:
-        with open(DATA_RANGE_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_range_db(data):
-    with open(DATA_RANGE_FILE, "w") as f:
-        json.dump(data, f, indent=4)
-
-def save_number_range_info(uid, number, range_text):
-    db = load_range_db()
-    flag, name = get_country_info(number)
-    db[normalize_number(number)] = {
-        "user_id": str(uid),
-        "number": f"+{normalize_number(number)}",
-        "range": range_text,
-        "country": f"{flag} {name}"
-    }
-    save_range_db(db)
-
-# ==================== COUNTRY MAPPING SECTION ====================
-
-def get_country_info(number):
-    number = str(number).strip()
-
-    country_map = {
-        "2376": ("🇨🇲", "Cameroon"),
-        "2250": ("🇨🇮", "Ivory Coast"),
-        "2613": ("🇲🇬", "Madagascar"),
-        "4077": ("🇷🇴", "Romania"),
-        "237": ("🇨🇲", "Cameroon"),
-        "225": ("🇨🇮", "Ivory Coast"),
-        "261": ("🇲🇬", "Madagascar"),
-        "20": ("🇪🇬", "Egypt"),
-        "27": ("🇿🇦", "South Africa"),
-        "234": ("🇳🇬", "Nigeria"),
-        "254": ("🇰🇪", "Kenya"),
-        "233": ("🇬🇭", "Ghana"),
-        "212": ("🇲🇦", "Morocco"),
-        "213": ("🇩🇿", "Algeria"),
-        "216": ("🇹🇳", "Tunisia"),
-        "218": ("🇱🇾", "Libya"),
-        "249": ("🇸🇩", "Sudan"),
-        "251": ("🇪🇹", "Ethiopia"),
-        "252": ("🇸🇴", "Somalia"),
-        "253": ("🇩🇯", "Djibouti"),
-        "255": ("🇹🇿", "Tanzania"),
-        "256": ("🇺🇬", "Uganda"),
-        "257": ("🇧🇮", "Burundi"),
-        "258": ("🇲🇿", "Mozambique"),
-        "260": ("🇿🇲", "Zambia"),
-        "263": ("🇿🇼", "Zimbabwe"),
-        "264": ("🇳🇦", "Namibia"),
-        "265": ("🇲🇼", "Malawi"),
-        "266": ("🇱🇸", "Lesotho"),
-        "267": ("🇧🇼", "Botswana"),
-        "268": ("🇸🇿", "Swaziland"),
-        "269": ("🇰🇲", "Comoros"),
-        "220": ("🇬🇲", "Gambia"),
-        "221": ("🇸🇳", "Senegal"),
-        "222": ("🇲🇷", "Mauritania"),
-        "223": ("🇲🇱", "Mali"),
-        "224": ("🇬🇳", "Guinea"),
-        "226": ("🇧🇫", "Burkina Faso"),
-        "227": ("🇳🇪", "Niger"),
-        "228": ("🇹🇬", "Togo"),
-        "229": ("🇧🇯", "Benin"),
-        "230": ("🇲🇺", "Mauritius"),
-        "231": ("🇱🇷", "Liberia"),
-        "232": ("🇸🇱", "Sierra Leone"),
-        "235": ("🇹🇩", "Chad"),
-        "236": ("🇨🇫", "Central African Republic"),
-        "238": ("🇨🇻", "Cape Verde"),
-        "239": ("🇸🇹", "Sao Tome and Principe"),
-        "240": ("🇬🇶", "Equatorial Guinea"),
-        "241": ("🇬🇦", "Gabon"),
-        "242": ("🇨🇬", "Congo"),
-        "243": ("🇨🇩", "DR Congo"),
-        "244": ("🇦🇴", "Angola"),
-        "245": ("🇬🇼", "Guinea-Bissau"),
-        "247": ("🇸🇭", "Saint Helena"),
-        "248": ("🇸🇨", "Seychelles"),
-        "250": ("🇷🇼", "Rwanda"),
-        "290": ("🇸🇭", "Saint Helena"),
-        "291": ("🇪🇷", "Eritrea"),
-        "40": ("🇷🇴", "Romania"),
-        "44": ("🇬🇧", "United Kingdom"),
-        "33": ("🇫🇷", "France"),
-        "49": ("🇩🇪", "Germany"),
-        "39": ("🇮🇹", "Italy"),
-        "34": ("🇪🇸", "Spain"),
-        "31": ("🇳🇱", "Netherlands"),
-        "32": ("🇧🇪", "Belgium"),
-        "41": ("🇨🇭", "Switzerland"),
-        "43": ("🇦🇹", "Austria"),
-        "46": ("🇸🇪", "Sweden"),
-        "47": ("🇳🇴", "Norway"),
-        "45": ("🇩🇰", "Denmark"),
-        "358": ("🇫🇮", "Finland"),
-        "351": ("🇵🇹", "Portugal"),
-        "353": ("🇮🇪", "Ireland"),
-        "36": ("🇭🇺", "Hungary"),
-        "48": ("🇵🇱", "Poland"),
-        "380": ("🇺🇦", "Ukraine"),
-        "370": ("🇱🇹", "Lithuania"),
-        "371": ("🇱🇻", "Latvia"),
-        "372": ("🇪🇪", "Estonia"),
-        "373": ("🇲🇩", "Moldova"),
-        "374": ("🇦🇲", "Armenia"),
-        "375": ("🇧🇾", "Belarus"),
-        "376": ("🇦🇩", "Andorra"),
-        "377": ("🇲🇨", "Monaco"),
-        "381": ("🇷🇸", "Serbia"),
-        "382": ("🇲🇪", "Montenegro"),
-        "385": ("🇭🇷", "Croatia"),
-        "386": ("🇸🇮", "Slovenia"),
-        "387": ("🇧🇦", "Bosnia and Herzegovina"),
-        "389": ("🇲🇰", "North Macedonia"),
-        "350": ("🇬🇮", "Gibraltar"),
-        "352": ("🇱🇺", "Luxembourg"),
-        "354": ("🇮🇸", "Iceland"),
-        "355": ("🇦🇱", "Albania"),
-        "356": ("🇲🇹", "Malta"),
-        "357": ("🇨🇾", "Cyprus"),
-        "359": ("🇧🇬", "Bulgaria"),
-        "421": ("🇸🇰", "Slovakia"),
-        "420": ("🇨🇿", "Czech Republic"),
-        "298": ("🇫🇴", "Faroe Islands"),
-        "299": ("🇬🇱", "Greenland"),
-        "1": ("🇺🇸", "United States"),
-        "7": ("🇷🇺", "Russia"),
-        "91": ("🇮🇳", "India"),
-        "92": ("🇵🇰", "Pakistan"),
-        "880": ("🇧🇩", "Bangladesh"),
-        "86": ("🇨🇳", "China"),
-        "81": ("🇯🇵", "Japan"),
-        "82": ("🇰🇷", "South Korea"),
-        "84": ("🇻🇳", "Vietnam"),
-        "66": ("🇹🇭", "Thailand"),
-        "62": ("🇮🇩", "Indonesia"),
-        "60": ("🇲🇾", "Malaysia"),
-        "65": ("🇸🇬", "Singapore"),
-        "63": ("🇵🇭", "Philippines"),
-        "95": ("🇲🇲", "Myanmar"),
-        "94": ("🇱🇰", "Sri Lanka"),
-        "977": ("🇳🇵", "Nepal"),
-        "93": ("🇦🇫", "Afghanistan"),
-        "98": ("🇮🇷", "Iran"),
-        "90": ("🇹🇷", "Turkey"),
-        "964": ("🇮🇶", "Iraq"),
-        "963": ("🇸🇾", "Syria"),
-        "961": ("🇱🇧", "Lebanon"),
-        "962": ("🇯🇴", "Jordan"),
-        "965": ("🇰🇼", "Kuwait"),
-        "966": ("🇸🇦", "Saudi Arabia"),
-        "967": ("🇾🇲", "Yemen"),
-        "968": ("🇴🇲", "Oman"),
-        "971": ("🇦🇪", "United Arab Emirates"),
-        "972": ("🇮🇱", "Israel"),
-        "973": ("🇧🇭", "Bahrain"),
-        "974": ("🇶🇦", "Qatar"),
-        "994": ("🇦🇿", "Azerbaijan"),
-        "995": ("🇬🇪", "Georgia"),
-        "996": ("🇰🇬", "Kyrgyzstan"),
-        "992": ("🇹🇯", "Tajikistan"),
-        "993": ("🇹🇲", "Turkmenistan"),
-        "998": ("🇺🇿", "Uzbekistan"),
-        "855": ("🇰🇭", "Cambodia"),
-        "856": ("🇱🇦", "Laos"),
-        "976": ("🇲🇳", "Mongolia"),
-        "850": ("🇰🇵", "North Korea"),
-        "55": ("🇧🇷", "Brazil"),
-        "52": ("🇲🇽", "Mexico"),
-        "54": ("🇦🇷", "Argentina"),
-        "57": ("🇨🇴", "Colombia"),
-        "51": ("🇵🇪", "Peru"),
-        "58": ("🇻🇪", "Venezuela"),
-        "56": ("🇨🇱", "Chile"),
-        "593": ("🇪🇨", "Ecuador"),
-        "591": ("🇧🇴", "Bolivia"),
-        "595": ("🇵🇾", "Paraguay"),
-        "598": ("🇺🇾", "Uruguay"),
-        "502": ("🇬🇹", "Guatemala"),
-        "503": ("🇸🇻", "El Salvador"),
-        "504": ("🇭🇳", "Honduras"),
-        "506": ("🇨🇷", "Costa Rica"),
-        "507": ("🇵🇦", "Panama"),
-        "509": ("🇭🇹", "Haiti"),
-        "501": ("🇧🇿", "Belize"),
-        "61": ("🇦🇺", "Australia"),
-        "64": ("🇳🇿", "New Zealand"),
-        "675": ("🇵🇬", "Papua New Guinea"),
-        "679": ("🇫🇯", "Fiji"),
-        "1246": ("🇧🇧", "Barbados"),
-        "1876": ("🇯🇲", "Jamaica"),
-        "53": ("🇨🇺", "Cuba"),
-        "592": ("🇬🇾", "Guyana"),
-    }
-
-    clean_num = str(number).replace('+', '').replace(' ', '').replace('-', '').strip()
-    sorted_prefixes = sorted(country_map.keys(), key=len, reverse=True)
-
-    for prefix in sorted_prefixes:
-        if clean_num.startswith(prefix):
-            return country_map[prefix]
-
-    return ("🌍", "Unknown")
-
-# ==================== SERVICE DETECTION SECTION ====================
-
-def detect_service(full_sms):
-    if not full_sms:
-        return "SMS SERVICE"
-
-    sms_lower = full_sms.lower()
-
-    service_keywords = {
-        "facebook": "FACEBOOK", "fb": "FACEBOOK",
-        "instagram": "INSTAGRAM", "insta": "INSTAGRAM",
-        "tiktok": "TIKTOK",
-        "twitter": "TWITTER", "x.com": "TWITTER",
-        "snapchat": "SNAPCHAT", "snap": "SNAPCHAT",
-        "whatsapp": "WHATSAPP",
-        "telegram": "TELEGRAM",
-        "discord": "DISCORD",
-        "messenger": "MESSENGER",
-        "linkedin": "LINKEDIN",
-        "google": "GOOGLE", "gmail": "GOOGLE",
-        "amazon": "AMAZON",
-        "microsoft": "MICROSOFT", "outlook": "MICROSOFT",
-        "yahoo": "YAHOO",
-        "paypal": "PAYPAL",
-        "binance": "BINANCE",
-        "coinbase": "COINBASE",
-        "spotify": "SPOTIFY",
-        "netflix": "NETFLIX",
-        "uber": "UBER",
-        "apple": "APPLE", "icloud": "APPLE",
-        "bkash": "BKASH",
-        "nagad": "NAGAD",
-        "stripe": "STRIPE",
-        "line": "LINE",
-        "wechat": "WECHAT",
-        "viber": "VIBER",
-        "signal": "SIGNAL",
-        "pubg": "PUBG",
-        "free fire": "FREE FIRE",
-    }
-
-    for keyword, service_name in sorted(service_keywords.items(), key=lambda x: len(x[0]), reverse=True):
-        if keyword in sms_lower:
-            return service_name
-
-    return "SMS SERVICE"
-
-# ==================== KEYBOARDS SECTION ====================
-# Main user menu keyboard
-
-from telegram import KeyboardButton, ReplyKeyboardMarkup
-
-def make_reply_btn(text, emoji_id=None, style=None):
-    api_kwargs = {}
-    if emoji_id:
-        api_kwargs['icon_custom_emoji_id'] = str(emoji_id)
-    if style:
-        api_kwargs['style'] = style
-    return KeyboardButton(
-        text=text,
-        api_kwargs=api_kwargs if api_kwargs else None
-    )
-
-def main_keyboard(user_id):
-    keyboard = [
-        [
-            make_reply_btn("GET NUMBER",     emoji_id="5228843986747147814", style="primary"),
-            make_reply_btn("GET 2FA",        emoji_id="5296369303661067030", style="primary")
-        ],
-        [
-            make_reply_btn("PROFILE",        emoji_id="5422444280473998663", style="primary"),
-            make_reply_btn("LEADERBOARD",    emoji_id="5228875876879318811", style="primary")
-        ],
-        [
-            make_reply_btn("SUPPORT",        emoji_id="5267294466716244344", style="primary")
-        ],
-    ]
-
-    if is_admin(user_id):
-        keyboard.append([
-            make_reply_btn("ADMIN PANEL", emoji_id="5350396951407895212", style="primary")
-        ])
-
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def account_keyboard():
-    """Keyboard for account-related actions grouped under one main-menu button."""
-    keyboard = [
-        [
-            make_reply_btn("BALANCE",        emoji_id="6233367447789899509", style="primary"),
-            make_reply_btn("REFER AND EARN", emoji_id="5420396762189831222", style="primary")
-        ],
-        [
-            make_reply_btn("VIEW PROFILE",   emoji_id="5422444280473998663", style="primary")
-            ,make_reply_btn("BACK TO MAIN",  emoji_id="5267490665117275176", style="primary")
-        ],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def cancel_keyboard():
-    keyboard = [[make_reply_btn("CANCEL", emoji_id="5420130255174145507", style="primary")]]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def admin_main_keyboard():
-    keyboard = [
-        [make_reply_btn("USER MANAGEMENT",      emoji_id="5193063022226086560", style="primary"),
-         make_reply_btn("SYSTEM CONFIGURATION", emoji_id="5341715473882955310", style="primary")],
-        [make_reply_btn("BOT SETTINGS",         emoji_id="5282843764451195532", style="primary"),
-         make_reply_btn("SERVICE MANAGEMENT",   emoji_id="5375338737028841420", style="primary")],
-        [make_reply_btn("WITHDRAWAL MANAGEMENT", emoji_id="6233367447789899509", style="primary"),
-         make_reply_btn("SUPPORT CHAT",           emoji_id="5267294466716244344", style="primary")],
-        [make_reply_btn("⏳ PENDING WITHDRAWALS", emoji_id="6217721388736712699", style="primary")],
-        [make_reply_btn("BACK TO MAIN",         emoji_id="5267490665117275176", style="primary")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def user_management_keyboard():
-    keyboard = [
-        [make_reply_btn("SEND MESSAGE TO ALL USERS", emoji_id="5251671733630431622", style="primary"),
-         make_reply_btn("ALL USER ID",               emoji_id="5352861489541714456", style="primary")],
-        [make_reply_btn("BAN USER LIST",             emoji_id="5420323339723881652", style="primary"),
-         make_reply_btn("ALL USER BALANCE",          emoji_id="6233367447789899509", style="primary")],
-        [make_reply_btn("BACK TO ADMIN",             emoji_id="5267490665117275176", style="primary")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def system_config_keyboard():
-    keyboard = [
-        [make_reply_btn("TODAY ALL STATUS",  emoji_id="5231200819986047254", style="primary"),
-         make_reply_btn("USER STATUS CHECK", emoji_id="5352861489541714456", style="primary")],
-        [make_reply_btn("BAN USER",          emoji_id="5420323339723881652", style="primary"),
-         make_reply_btn("UNBAN USER",        emoji_id="5875017993909440887", style="primary")],
-        [make_reply_btn("BAN USER LIST",     emoji_id="5956074558044770726", style="primary"),
-         make_reply_btn("REMOVE BALANCE",    emoji_id="5244837092042750681", style="primary")],
-        [make_reply_btn("ADD BALANCE",       emoji_id="5397916757333654639", style="primary"),
-         make_reply_btn("BACK TO ADMIN",     emoji_id="5267490665117275176", style="primary")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def bot_settings_keyboard():
-    keyboard = [
-        [make_reply_btn("ADD ADMIN",          emoji_id="5397916757333654639", style="primary"),
-         make_reply_btn("REMOVE ADMIN",       emoji_id="5244837092042750681", style="primary")],
-        [make_reply_btn("SET OTP GROUP LINK", emoji_id="5253742260054409879", style="primary"),
-         make_reply_btn("SET FORCE CHANNEL",  emoji_id="5282843764451195532", style="primary")],
-        [make_reply_btn("SET OTP CHAT ID",    emoji_id="5231200819986047254", style="primary"),
-         make_reply_btn("ZENEX CONFIG",       emoji_id="5350396951407895212", style="primary")],
-        [make_reply_btn("BACK TO ADMIN",      emoji_id="5267490665117275176", style="primary")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def zenex_config_keyboard():
-    keyboard = [
-        [make_reply_btn("SET API KEY",          emoji_id="5397916757333654639", style="primary"),
-         make_reply_btn("SET BASE URL",         emoji_id="5253742260054409879", style="primary")],
-        [make_reply_btn("SET ALLOWED SERVICES", emoji_id="5341715473882955310", style="primary"),
-         make_reply_btn("VIEW ZENEX CONFIG",    emoji_id="5231200819986047254", style="primary")],
-        [make_reply_btn("BACK TO BOT SETTINGS", emoji_id="5267490665117275176", style="primary")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def service_management_keyboard():
-    keyboard = [
-        [make_reply_btn("ADD SERVICE",    emoji_id="5397916757333654639", style="primary"),
-         make_reply_btn("REMOVE SERVICE", emoji_id="5244837092042750681", style="primary")],
-        [make_reply_btn("LIST SERVICES",  emoji_id="5352861489541714456", style="primary"),
-         make_reply_btn("BACK TO ADMIN",  emoji_id="5267490665117275176", style="primary")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def withdrawal_management_keyboard():
-    keyboard = [
-        [
-            make_reply_btn("PENDING WITHDRAWALS", emoji_id="6217721388736712699", style="primary"),
-            make_reply_btn("SET MINIMUM WITHDRAW", emoji_id="5397916757333654639", style="primary"),
-        ],
-        [
-            make_reply_btn("BACK TO ADMIN", emoji_id="5267490665117275176", style="primary"),
-        ],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def withdraw_method_keyboard():
-    keyboard = ReplyKeyboardMarkup([
-        [make_reply_btn("BKASH",  emoji_id="5348469219761626211", style="primary"),
-         make_reply_btn("NAGAD",  emoji_id="5352985330628730418", style="primary")],
-        [make_reply_btn("ROCKET", emoji_id="5346042941196507141", style="primary"),
-         make_reply_btn("BINANCE",emoji_id="5348212415077064131", style="primary")],
-        [make_reply_btn("CANCEL", emoji_id="5420130255174145507", style="primary")]
-    ], resize_keyboard=True)
-    return keyboard
-
-# ==================== HELPER FUNCTIONS SECTION ====================
-
-def format_balance(balance):
-    return f"{balance:.2f}"
-
-def extract_otp(text):
-    if not text or text == "No Content":
-        return "N/A"
-    spaced_otp = re.search(r'\b(\d{3}\s\d{3})\b', text)
-    if spaced_otp:
-        return spaced_otp.group(1).replace(" ", "")
-    match = re.search(r'\b(\d{4,8})\b', text)
-    return match.group(1) if match else "N/A"
-
-def normalize_number(num):
-    return re.sub(r'\D', '', str(num))
-
-def mask_number(num):
-    if len(num) > 6:
-        return f"{num[:4]}****{num[-6:]}"
-    return num
-
-def get_date_reset_time():
-    now = datetime.now()
-    today_midnight = datetime(now.year, now.month, now.day, 0, 0, 0)
-    return today_midnight
-
-def is_valid_bangladesh_number(number):
-    number = re.sub(r'\D', '', str(number))
-    return len(number) == 11 and number.startswith('01')
-
-def is_range_request(param):
-    return 'X' in param.upper()
-
-def is_referral_request(param):
-    return param.isdigit()
-
-# ==================== DATABASE FUNCTIONS SECTION ====================
-
-def load_data(filename=USER_DATA_FILE):
-    if not os.path.exists(filename):
-        with open(filename, "w") as f:
-            json.dump({}, f)
-        return {}
-    try:
-        with open(filename, "r") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_data(data, filename=USER_DATA_FILE):
-    with open(filename, "w") as f:
-        json.dump(data, f, indent=4)
-
-def get_user(uid):
-    uid = str(uid)
-    data = load_data()
-    if uid not in data:
-        data[uid] = {"user_id": uid, "balance": 0.0, "total_numbers": 0, "referral_count": 0}
-        save_data(data)
-    return data[uid]
-
-async def update_db_balance(uid, amount):
-    uid = str(uid)
-    data = load_data()
-    if uid in data:
-        data[uid]["balance"] = round(data[uid].get("balance", 0.0) + amount, 2)
-        save_data(data)
-        return data[uid]["balance"]
-    return 0.0
-
-def get_all_users():
-    data = load_data(USER_DATA_FILE)
-    return list(data.keys()) if data else []
-
-def user_exists(uid):
-    data = load_data(USER_DATA_FILE)
-    return str(uid) in data
-
-# ==================== STATS FUNCTIONS SECTION ====================
-
-def load_stats():
-    if not os.path.exists(STATS_FILE):
-        with open(STATS_FILE, "w") as f:
-            json.dump({}, f)
-        return {}
-    try:
-        with open(STATS_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_stats(stats):
-    with open(STATS_FILE, "w") as f:
-        json.dump(stats, f, indent=4)
-
-def add_number_taken(uid, count=1):
-    uid = str(uid)
-    stats = load_stats()
-    if uid not in stats:
-        stats[uid] = {"numbers_taken": [], "otps_received": []}
-    now = datetime.now().isoformat()
-    for _ in range(count):
-        stats[uid]["numbers_taken"].append(now)
-    log_global_activity(uid, "NUMBER_TAKEN", {"count": count})
-    save_stats(stats)
-
-def add_otp_received(uid):
-    uid = str(uid)
-    stats = load_stats()
-    if uid not in stats:
-        stats[uid] = {"numbers_taken": [], "otps_received": []}
-    stats[uid]["otps_received"].append(datetime.now().isoformat())
-    save_stats(stats)
-
-def get_user_stats(uid):
-    uid = str(uid)
-    stats = load_stats()
-    user_stats = stats.get(uid, {"numbers_taken": [], "otps_received": []})
-
-    now = datetime.now()
-    today_midnight = get_date_reset_time()
-    last_24h = now - timedelta(hours=24)
-    last_7d = now - timedelta(days=7)
-
-    numbers_taken = user_stats.get("numbers_taken", [])
-    otps_received = user_stats.get("otps_received", [])
-
-    today_numbers = sum(1 for t in numbers_taken if datetime.fromisoformat(t) >= today_midnight)
-    today_otps = sum(1 for t in otps_received if datetime.fromisoformat(t) >= today_midnight)
-    last24h_numbers = sum(1 for t in numbers_taken if datetime.fromisoformat(t) > last_24h)
-    last24h_otps = sum(1 for t in otps_received if datetime.fromisoformat(t) > last_24h)
-    last7d_numbers = sum(1 for t in numbers_taken if datetime.fromisoformat(t) > last_7d)
-    last7d_otps = sum(1 for t in otps_received if datetime.fromisoformat(t) > last_7d)
-    total_numbers = len(numbers_taken)
-    total_otps = len(otps_received)
-
-    return {
-        "total_numbers": total_numbers, "total_otps": total_otps,
-        "today_numbers": today_numbers, "today_otps": today_otps,
-        "last24h_numbers": last24h_numbers, "last24h_otps": last24h_otps,
-        "last7d_numbers": last7d_numbers, "last7d_otps": last7d_otps
-    }
-
-def log_global_activity(uid, action, details):
-    if not os.path.exists(ACTIVITY_LOGS_FILE):
-        with open(ACTIVITY_LOGS_FILE, "w") as f:
-            json.dump([], f)
-    try:
-        with open(ACTIVITY_LOGS_FILE, "r") as f:
-            logs = json.load(f)
-    except:
-        logs = []
-    now = datetime.now()
-    logs.append({
-        "uid": str(uid), "action": action, "details": details,
-        "timestamp": now.isoformat(),
-        "date": now.strftime("%d/%m/%Y"),
-        "time": now.strftime("%H:%M:%S")
-    })
-    with open(ACTIVITY_LOGS_FILE, "w") as f:
-        json.dump(logs, f, indent=4)
-
-def get_global_system_stats():
-    stats = load_stats()
-    now = datetime.now()
-    today_midnight = datetime(now.year, now.month, now.day)
-    last_7d = now - timedelta(days=7)
-    total_n = total_o = today_n = today_o = seven_n = seven_o = 0
-    for uid in stats:
-        u = stats[uid]
-        n_list = u.get("numbers_taken", [])
-        o_list = u.get("otps_received", [])
-        total_n += len(n_list)
-        total_o += len(o_list)
-        for t in n_list:
-            dt = datetime.fromisoformat(t)
-            if dt >= today_midnight: today_n += 1
-            if dt >= last_7d: seven_n += 1
-        for t in o_list:
-            dt = datetime.fromisoformat(t)
-            if dt >= today_midnight: today_o += 1
-            if dt >= last_7d: seven_o += 1
-    return today_n, today_o, seven_n, seven_o, total_n, total_o
-
-# ==================== LEADERBOARD SECTION ====================
-
-async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if is_user_banned(uid):
-        await update.message.reply_text("🚫 YOU ARE BANNED 🚫", reply_markup=main_keyboard(uid))
-        return
-
-    stats_data = load_stats()
-    today_midnight = get_date_reset_time()
-    user_data_all = load_data(USER_DATA_FILE)
-
-    user_today_counts = []
-
-    for uid_str, user_stats in stats_data.items():
-        otps_received = user_stats.get("otps_received", [])
-        today_count = 0
-        for ts in otps_received:
-            try:
-                dt = datetime.fromisoformat(ts)
-                if dt >= today_midnight:
-                    today_count += 1
-            except:
-                continue
-        if today_count > 0:
-            name = user_data_all.get(uid_str, {}).get("full_name")
-            if not name:
-                name = user_data_all.get(uid_str, {}).get("username")
-            if not name:
-                name = f"User {uid_str}"
-            user_today_counts.append((uid_str, today_count, html.escape(name)))
-
-    user_today_counts.sort(key=lambda x: x[1], reverse=True)
-    top10 = user_today_counts[:10]
-
-    if not top10:
-        msg = (
-            "<b>🏆 TOP 10 OTP LEADERBOARD 🏆</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "❌ আজ পর্যন্ত কেউ OTP পায়নি।\n"
-        )
-    else:
-        msg = (
-            "<b>🏆 TOP 10 OTP RECEIVERS (TODAY) 🏆</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-        )
-        for idx, (uid_str, count, name) in enumerate(top10, 1):
-            if idx == 1:
-                medal = "🥇"
-            elif idx == 2:
-                medal = "🥈"
-            elif idx == 3:
-                medal = "🥉"
-            else:
-                medal = f"{idx}️⃣"
-            msg += f"{medal} <b>{name}</b>\n   🔑 <code>{count}</code> OTPs\n\n"
-        msg += (
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "📊 <i>প্রতিদিন রাত ১২টায় রিসেট হয়</i>"
-        )
-
-    await update.message.reply_text(pe(msg), parse_mode="HTML", reply_markup=main_keyboard(uid))
-
-# ==================== 2FA CODE GENERATOR SECTION ====================
-
-def generate_2fa_code(secret_key):
-    try:
-        clean_secret = secret_key.replace(" ", "").upper().strip()
-        key = base64.b32decode(clean_secret, casefold=True)
-        t = int(time.time()) // 30
-        msg_bytes = struct.pack(">Q", t)
-        h = hmac.new(key, msg_bytes, hashlib.sha1).digest()
-        o = h[-1] & 0xf
-        code = (struct.unpack(">I", h[o:o+4])[0] & 0x7fffffff) % 1_000_000
-        return f"{code:06d}", clean_secret
-    except:
-        return None, None
-
-async def get_2fa_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if is_user_banned(uid):
-        await update.message.reply_text("🚫 YOU ARE BANNED 🚫", reply_markup=main_keyboard(uid))
-        return
-    context.user_data["mode"] = "get_2fa"
-    await update.message.reply_text(
-        pe("⚡ <b>GET 2FA CODE</b> ⚡\n\n"
-        "<blockquote>🔑 ENTER YOUR 2FA SECRET KEY:</blockquote>"),
-        parse_mode="HTML"
-    )
-
-async def process_2fa_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    secret_key = update.message.text.strip()
-    context.user_data["mode"] = None
-
-    otp_code, clean_key = generate_2fa_code(secret_key)
-
-    if otp_code is None:
-        await update.message.reply_text(
-            pe("❌ <b>INVALID 2FA SECRET KEY</b>\n\n⚠️ Please send a valid base32 key."),
-            parse_mode="HTML",
-            reply_markup=main_keyboard(uid)
-        )
-        return
-
-    now = datetime.now()
-    final_msg = (
-        "✅ <b>2FA CODE GENERATED!</b>\n\n"
-        f"<blockquote>🔑 KEY: <code>{clean_key}</code></blockquote>\n"
-        f"<blockquote>🔢 CODE: <code>{otp_code}</code></blockquote>\n"
-        f"<blockquote>⏳ EXPIRES IN: 30 SECONDS</blockquote>\n"
-        f"📅 {now.strftime('%d %B, %Y')} | {now.strftime('%I:%M %p')}"
-    )
-    await update.message.reply_text(pe(final_msg), parse_mode="HTML")
-
-
-def build_manual_service_buttons():
-    """Build inline buttons for manually added services."""
-    s = load_settings()
-    manual = s.get("manual_services", [])
-    btns = []
-    clrs = ["primary"]
-    for i, svc in enumerate(manual):
-        btns.append(InlineKeyboardButton(
-            make_bold_text(svc['name']),
-            callback_data=f"manual_svc_{i}",
-            api_kwargs={"icon_custom_emoji_id": get_app_emoji_id(svc['name']), "style": clrs[i % len(clrs)]}
-        ))
-    rows = [btns[j:j+2] for j in range(0, len(btns), 2)]
-    return rows
-
-async def show_app_selection(update, context):
-    uid = update.effective_user.id
-    if is_user_banned(uid):
-        await update.message.reply_text("🚫 YOU ARE BANNED 🚫", reply_markup=main_keyboard(uid))
-        return
-    context.user_data.pop("top_ranges_by_app", None)
-
-    # Build combined keyboard: Zenex apps + manual services
-    async def _build_full_keyboard(top):
-        zenex_rows = build_app_buttons_from_cache(top)
-        manual_rows = build_manual_service_buttons()
-        all_rows = zenex_rows + manual_rows
-        if not all_rows:
-            all_rows = []
-        all_rows.append([InlineKeyboardButton("⚙️ CUSTOM RANGE", callback_data="custom_range",
-                                               api_kwargs={"style": "primary"})])
-        return all_rows
-
-    cache_age = time.monotonic() - _ranges_cache["updated_at"]
-    if _ranges_cache["data"] and cache_age < 300:
-        top = _ranges_cache["data"]
-        context.user_data["top_ranges_by_app"] = top
-        msg = f'{get_tg_emoji("get_number_btn")} <b>SELECT APP TO GET NUMBER</b>\n━━━━━━━━━━━━━━━━━━━━━'
-        kb = await _build_full_keyboard(top)
-        await update.message.reply_text(pe(msg), parse_mode="HTML",
-                                         reply_markup=InlineKeyboardMarkup(kb))
-        return
-    status = await update.message.reply_text(
-        pe(f'{get_tg_emoji("loading")} <b>Loading ranges...</b>'), parse_mode="HTML")
-    top, err = await fetch_top55_ranges_by_app()
-    if err or not top:
-        top, err = await fetch_top55_ranges_by_app()
-    if err:
-        manual_rows = build_manual_service_buttons()
-        if manual_rows:
-            manual_rows.append([InlineKeyboardButton("⚙️ CUSTOM RANGE", callback_data="custom_range",
-                                                      api_kwargs={"style": "primary"})])
-            await status.edit_text(
-                pe(f'{get_tg_emoji("get_number_btn")} <b>SELECT APP TO GET NUMBER</b>\n━━━━━━━━━━━━━━━━━━━━━\n<blockquote>⚠️ Zenex unavailable — showing manual services</blockquote>'),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(manual_rows))
-        else:
-            await status.edit_text(
-                pe(f'{get_tg_emoji("cross")} <b>Could not load ranges.</b>\n<blockquote>{err}</blockquote>'),
-                parse_mode="HTML")
-        return
-    if not top:
-        # Show only manual services if Zenex fails
-        manual_rows = build_manual_service_buttons()
-        if manual_rows:
-            manual_rows.append([InlineKeyboardButton("⚙️ CUSTOM RANGE", callback_data="custom_range",
-                                                       api_kwargs={"style": "primary"})])
-            await status.edit_text(
-                pe(f'{get_tg_emoji("get_number_btn")} <b>SELECT APP TO GET NUMBER</b>\n━━━━━━━━━━━━━━━━━━━━━\n<blockquote>⚠️ Zenex ranges unavailable — showing manual services</blockquote>'),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(manual_rows))
-        else:
-            await status.edit_text(
-                pe(f'{get_tg_emoji("stop")} No active ranges returned by the API.'), parse_mode="HTML")
-        return
-    _ranges_cache["data"] = top
-    _ranges_cache["updated_at"] = time.monotonic()
-    context.user_data["top_ranges_by_app"] = top
-    msg = f'{get_tg_emoji("get_number_btn")} <b>SELECT APP TO GET NUMBER</b>\n━━━━━━━━━━━━━━━━━━━━━'
-    kb = await _build_full_keyboard(top)
-    await status.edit_text(pe(msg), parse_mode="HTML",
-                            reply_markup=InlineKeyboardMarkup(kb))
-
-# ==================== AUTO OTP MONITOR SECTION (ZENEXA) ====================
-
-async def monitor_loop(app):
-    while True:
-        try:
-            settings = load_settings()
-            api_key, base_url = get_api_credentials()
-            urls = get_api_urls(base_url)
-            headers = get_api_headers(api_key)
-            r = await client_async.get(urls["otp"], headers=headers)
-            if r.status_code != 200:
-                await asyncio.sleep(5); continue
-            try: res = r.json()
-            except Exception: await asyncio.sleep(5); continue
-
-            otps = []
-            if isinstance(res, dict):
-                if "data" in res:
-                    d = res["data"]
-                    otps = d if isinstance(d, list) else (d.get("otps") or d.get("active") or [])
-                else:
-                    otps = res.get("otps") or []
-            elif isinstance(res, list):
-                otps = res
-
-            if otps:
-                paid_data = load_data(PAID_SMS_FILE)
-                paid_keys_set = set(paid_data.keys())
-                processed_in_session = set()
-
-                for otp in otps:
-                    num = normalize_number(otp.get("number", ""))
-                    full_sms = otp.get("otp") or otp.get("sms") or otp.get("message") or "No SMS Content"
-                    otp_id = str(otp.get("nid") or otp.get("otp_id", ""))
-                    otp_code = extract_otp(full_sms)
-                    if not otp_code or otp_code == "N/A": continue
-                    sms_key = otp_id if otp_id else f"{num}_{full_sms}"
-
-                    if (num in active_numbers and
-                            sms_key not in paid_keys_set and
-                            sms_key not in processed_in_session):
-                        details = active_numbers[num]
-                        paid_keys_set.add(sms_key)
-                        processed_in_session.add(sms_key)
-                        paid_data[sms_key] = {"uid": details["uid"], "otp": otp_code}
-
-                        otp_bonus = settings.get("otp_bonus", OTP_RATE)
-                        await update_db_balance(details["uid"], otp_bonus)
-                        add_otp_received(details["uid"])
-                        log_global_activity(details["uid"], "OTP_RECEIVED",
-                                            {"number": num, "otp": otp_code, "sms": full_sms})
-
-                        country_flag, country_name = get_country_info(num)
-                        clean_num = num.replace('+', '').strip()
-                        flag_tg = get_country_tg_flag(country_flag)
-                        purchased_app = details.get("app") or detect_service(full_sms)
-                        app_em = get_platform_icon(purchased_app)
-
-                        if HAS_COPY_BTN:
-                            try:
-                                btn_copy = InlineKeyboardButton(
-                                    text=otp_code,
-                                    copy_text=CopyTextButton(text=otp_code),
-                                    api_kwargs={"icon_custom_emoji_id": "5296369303661067030"})
-                            except Exception:
-                                btn_copy = InlineKeyboardButton(
-                                    otp_code, callback_data=f"copy_text_{otp_code}",
-                                    api_kwargs={"icon_custom_emoji_id": "5296369303661067030"})
-                        else:
-                            btn_copy = InlineKeyboardButton(
-                                otp_code, callback_data=f"copy_text_{otp_code}",
-                                api_kwargs={"icon_custom_emoji_id": "5296369303661067030"})
-
-                        panel_url = settings.get("panel_url", f"https://t.me/Zenex_Number_bot?start={ADMIN_ID}")
-                        channel_url = settings.get("channel_url", "https://t.me/MinoXofficial0")
-                        masked = mask_number(clean_num)
-                        user_msg  = f"{flag_tg} {app_em} +{clean_num}"
-                        group_msg = f"{flag_tg} {app_em} +{masked}"
-                        user_kb   = InlineKeyboardMarkup([[btn_copy]])
-                        group_kb  = InlineKeyboardMarkup([
-                            [btn_copy],
-                            [InlineKeyboardButton(" NUMBER", url=panel_url,
-                                api_kwargs={"icon_custom_emoji_id": "4943094697238201446", "style": "primary"}),
-                             InlineKeyboardButton(" CHANNEL", url=channel_url,
-                                api_kwargs={"icon_custom_emoji_id": "6215074610845585917", "style": "primary"})]])
-
-                        try: await app.bot.send_message(details["uid"], pe(user_msg), parse_mode="HTML", reply_markup=user_kb)
-                        except Exception: pass
-                        try:
-                            gid = settings.get("otp_group_chat_id") or OTP_GROUP_ID
-                            await app.bot.send_message(gid, pe(group_msg), parse_mode="HTML", reply_markup=group_kb)
-                        except Exception: pass
-                        save_data(paid_data, PAID_SMS_FILE)
-
-            now = datetime.now()
-            for nk in [k for k, v in list(active_numbers.items())
-                        if isinstance(v, dict) and "timestamp" in v
-                        and (now - v["timestamp"]).total_seconds() > 3600]:
-                del active_numbers[nk]
-        except Exception: pass
-        await asyncio.sleep(CHECK_INTERVAL)
-
-# ==================== WORKER & API SECTION ====================
-
-async def fetch_number_async(range_str):
-    range_str = str(range_str or "").strip().upper()
-    if not range_str:
-        return None
-
-    try:
-        api_key, base_url = get_api_credentials()
-        urls = get_api_urls(base_url)
-        headers = {**get_api_headers(api_key), "Accept": "application/json"}
-        r = await client_async.post(
-            urls["getnum"],
-            json={"range": range_str, "is_national": False, "remove_plus": False},
-            headers=headers,
-            # Number allocation can take longer than the old 2.2s read timeout.
-            timeout=httpx.Timeout(8.0, connect=2.0, read=6.0),
-        )
-        if not 200 <= r.status_code < 300:
-            return None
-
-        data = r.json()
-        num, number_payload = extract_number_from_payload(data)
-        if num:
-            otp = extract_first_value(
-                number_payload,
-                ("otp", "otp_code", "code", "verification_code"),
-            )
-            sms = extract_first_value(
-                number_payload,
-                ("sms", "message", "full_sms", "text"),
-            )
-            return {
-                "number": num,
-                "otp_now": bool(otp),
-                "otp": otp,
-                "sms": sms,
-            }
-    except (httpx.TimeoutException, httpx.NetworkError):
-        return None
-    except (ValueError, TypeError, KeyError):
-        return None
-    except Exception:
-        return None
+def get_account_by_id(site_key, account_id):
+    accounts = get_site_accounts(site_key)
+    for acc in accounts:
+        if acc["id"] == account_id or acc["id"].startswith(account_id):
+            return acc
     return None
 
-
-def extract_first_value(payload, keys):
-    """Find a scalar value in a response object without assuming one schema."""
-    if isinstance(payload, dict):
-        for key in keys:
-            value = payload.get(key)
-            if value not in (None, "") and isinstance(value, (str, int, float)):
-                return value
-        for value in payload.values():
-            found = extract_first_value(value, keys)
-            if found not in (None, ""):
-                return found
-    elif isinstance(payload, list):
-        for value in payload:
-            found = extract_first_value(value, keys)
-            if found not in (None, ""):
-                return found
-    return None
-
-
-def extract_number_from_payload(payload):
-    """Return (number, object containing it) for every known API nesting style."""
-    number_keys = (
-        "full_number", "no_plus_number", "phone_number",
-        "phone", "mobile", "msisdn", "number", "copy",
-    )
-    if isinstance(payload, dict):
-        for key in number_keys:
-            value = payload.get(key)
-            if isinstance(value, (str, int, float)):
-                normalized = normalize_number(value)
-                if len(normalized) >= 7:
-                    return value, payload
-        for value in payload.values():
-            number, owner = extract_number_from_payload(value)
-            if number:
-                return number, owner
-    elif isinstance(payload, list):
-        for value in payload:
-            number, owner = extract_number_from_payload(value)
-            if number:
-                return number, owner
-    return None, {}
-
-
-async def register_active_number(uid, number, range_text, app_name=None):
-    """Reserve a number once so concurrent requests cannot overwrite its owner."""
-    clean_num = normalize_number(number)
-    if len(clean_num) < 7:
-        return None
-
-    async with number_assignment_lock:
-        if clean_num in active_numbers:
-            return None
-        active_numbers[clean_num] = {
-            "uid": uid,
-            "range": str(range_text).strip().upper(),
-            "app": app_name or "",
-            "timestamp": datetime.now(),
-        }
-        save_number_range_info(uid, clean_num, range_text)
-    return clean_num
-
-async def fast_allocate_number(query, context, range_text, sid):
-    uid = query.from_user.id
-
-    if is_user_banned(uid):
-        await query.message.edit_text("🚫 YOU ARE BANNED 🚫")
-        return
-
-    res = None
-    clean_num = None
-    # The API can occasionally return a number that was just assigned to
-    # another concurrent request. Fetch again instead of overwriting ownership.
-    for _ in range(3):
-        res = await fetch_number_async(range_text)
-        if not res or not res.get("number"):
-            break
-        clean_num = await register_active_number(uid, res["number"], range_text, sid)
-        if clean_num:
-            break
-
-    if not res or not clean_num:
-        await query.message.edit_text(
-            pe("❌ <b>Number পাওয়া যায়নি।</b>\n\n"
-            "<blockquote>⚠️ এই range-এ এখন number নেই বা server busy।\n"
-            "আরেকটি range চেষ্টা করুন।</blockquote>"),
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 BACK", callback_data="back_services", style="primary")
-            ]])
-        )
-        return
-
-    add_number_taken(uid, 1)
-    last_range[uid] = range_text
-
-    country_flag, country_name = get_country_info(clean_num)
-
-    if res.get("otp_now") and res.get("otp"):
-        otp_safe = html.escape(str(res["otp"]))
-        sms_safe  = html.escape(str(res.get("sms") or ""))
-        _s = load_settings()
-        otp_bonus = _s.get("otp_bonus", OTP_RATE)
-        await update_db_balance(uid, otp_bonus)
-        add_otp_received(uid)
-        log_global_activity(uid, "OTP_RECEIVED", {"number": clean_num, "otp": res["otp"]})
-        text = (
-            f"✅ <b>YOUR NUMBER</b> ✅\n\n"
-            f"<blockquote>🌍 COUNTRY: <code>{country_flag} {html.escape(country_name)}</code></blockquote>\n"
-            f"<blockquote>📶 RANGE: <code>{range_text}</code></blockquote>\n"
-            f"<blockquote>📞 NUMBER: <code>+{clean_num}</code></blockquote>\n"
-            f"<blockquote>🔑 OTP: <code>{otp_safe}</code></blockquote>"
-            + (f"\n<blockquote>📩 SMS: <code>{sms_safe}</code></blockquote>" if sms_safe else "")
-            + f"\n\n<b>✅ OTP RECEIVED! +{otp_bonus:.2f} BDT ADDED</b>"
-        )
-    else:
-        text = (
-            f"✅ <b>YOUR NUMBER</b> ✅\n\n"
-            f"<blockquote>🌍 COUNTRY: <code>{country_flag} {html.escape(country_name)}</code></blockquote>\n"
-            f"<blockquote>📶 RANGE: <code>{range_text}</code></blockquote>\n"
-            f"<blockquote>📞 NUMBER: <code>+{clean_num}</code></blockquote>\n\n"
-            f"<b>📩 SMS STATUS: ⏳ WAITING...</b>"
-        )
-
-    # ★★★ USER BUTTONS COLOR UPDATED ★★★
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 SAME RANGE", callback_data="same_range", style="primary")],
-        [InlineKeyboardButton("📢 OTP GROUP", url="https://t.me/volt_x_lite_otp", style="primary")]
-    ])
-    try:
-        await query.message.edit_text(pe(text), parse_mode="HTML", reply_markup=keyboard)
-    except Exception as e:
-        print(f"fast_allocate edit error: {e}")
-
-async def worker():
-    while True:
-        task = await request_queue.get()
+def load_sessions():
+    if os.path.exists(SESSIONS_FILE):
         try:
-            if task['type'] == 'process_numbers':
-                await process_numbers(task['update'], task['context'], task['range_text'], task['count'])
-            elif task['type'] == 'search_otp':
-                await perform_otp_search(task['update'], task['context'], task['target_num'])
-            elif task['type'] == 'auto_number':
-                await process_auto_number(task['update'], task['context'], task['range_text'])
-        except Exception as e:
-            print(f"Worker Error: {e}")
-        finally:
-            request_queue.task_done()
-
-# ==================== AUTO NUMBER FROM LINK / DEEP LINK ====================
-
-async def process_auto_number(update, context, range_text):
-    uid = update.effective_user.id
-    chat_id = update.effective_chat.id
-
-    if is_user_banned(uid):
-        await context.bot.send_message(chat_id=chat_id, text="🚫 YOU ARE BANNED 🚫", reply_markup=main_keyboard(uid))
-        return
-
-    status_msg = await context.bot.send_message(chat_id=chat_id, text="🔍 SEARCHING...")
-
-    try:
-        res = await fetch_number_async(range_text)
-        if not res:
-            await status_msg.edit_text("❌ NO NUMBERS FOUND. TRY A VALID RANGE.")
-            return
-
-        generated_num = (
-            await register_active_number(
-                uid, res["number"], range_text, detect_service(range_text)
-            )
-            if res and res.get("number") else None
-        )
-        if not generated_num:
-            await status_msg.edit_text("❌ NO NUMBERS FOUND. TRY A VALID RANGE.")
-            return
-
-        last_range[uid] = range_text
-        add_number_taken(uid, 1)
-
-        country_flag, country_name = get_country_info(generated_num)
-
-        if res.get("otp_now") and res.get("otp"):
-            instant_otp = html.escape(str(res["otp"]))
-            instant_sms = html.escape(str(res.get("sms") or ""))
-            _s = load_settings()
-            otp_bonus = _s.get("otp_bonus", OTP_RATE)
-            await update_db_balance(uid, otp_bonus)
-            add_otp_received(uid)
-            log_global_activity(uid, "OTP_RECEIVED", {"number": generated_num, "otp": res["otp"]})
-            final_text = (
-                f"✅ <b>YOUR NUMBER DETAILS</b> ✅\n\n"
-                f"<blockquote>🌍 COUNTRY: <code>{country_flag} {country_name}</code></blockquote>\n"
-                f"<blockquote>📶 RANGE: <code>{range_text}</code></blockquote>\n\n"
-                f"<blockquote>📞 NUMBER: <code>+{generated_num}</code></blockquote>\n\n"
-                f"<blockquote>🔑 OTP: <code>{instant_otp}</code></blockquote>\n"
-                + (f"<blockquote>📩 SMS: <code>{instant_sms}</code></blockquote>\n" if instant_sms else "")
-                + f"\n<b>✅ OTP RECEIVED! +{otp_bonus:.2f} BDT ADDED</b>"
-            )
-        else:
-            final_text = (
-                f"✅ <b>YOUR NUMBER DETAILS</b> ✅\n\n"
-                f"<blockquote>🌍 COUNTRY: <code>{country_flag} {country_name}</code></blockquote>\n"
-                f"<blockquote>📶 RANGE: <code>{range_text}</code></blockquote>\n\n"
-                f"<blockquote>📞 NUMBER: <code>+{generated_num}</code></blockquote>\n\n"
-                f"<b>📩 SMS STATUS: ⏳ WAITING...</b>"
-            )
-
-        # ★★★ SAME RANGE BUTTON COLOR IN AUTO NUMBER (FOR CONSISTENCY) ★★★
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 SAME RANGE", callback_data="same_range", style="primary")],
-            [InlineKeyboardButton("📢 OTP GROUP", url="https://t.me/volt_x_lite_otp", style="primary")]
-        ])
-        await status_msg.edit_text(pe(final_text), parse_mode="HTML", reply_markup=keyboard)
-
-    except Exception as e:
-        print(f"Auto Number Error: {e}")
-        await status_msg.edit_text(f"❌ Error: {str(e)}")
-
-# ==================== USER PANEL — PROCESS NUMBERS ====================
-
-async def process_numbers(update_or_query, context, range_text, count):
-    if isinstance(update_or_query, Update) and update_or_query.callback_query:
-        uid = update_or_query.callback_query.from_user.id
-        chat_id = update_or_query.callback_query.message.chat_id
-    else:
-        uid = update_or_query.effective_user.id
-        chat_id = update_or_query.effective_chat.id
-
-    if is_user_banned(uid):
-        await context.bot.send_message(chat_id=chat_id, text="🚫 YOU ARE BANNED 🚫", reply_markup=main_keyboard(uid))
-        return
-
-    status_msg = await context.bot.send_message(chat_id=chat_id, text="🔍 SEARCHING . . .")
-
-    try:
-        last_range[uid] = range_text
-
-        tasks = [fetch_number_async(range_text) for _ in range(count)]
-        results = await asyncio.gather(*tasks)
-        valid_results = [r for r in results if r and r.get("number")]
-
-        if not valid_results:
-            await status_msg.edit_text("❌ NO NUMBERS FOUND. TRY A VALID RANGE.")
-            return
-
-        num_entries = []
-        for r in valid_results:
-            clean_num = await register_active_number(
-                uid, r["number"], range_text, r.get("app") or ""
-            )
-            if clean_num:
-                add_number_taken(uid, 1)
-                num_entries.append({
-                    "num":     clean_num,
-                    "otp_now": r.get("otp_now", False),
-                    "otp":     r.get("otp"),
-                    "sms":     r.get("sms"),
-                })
-
-        if not num_entries:
-            await status_msg.edit_text("❌ NO NUMBERS FOUND. TRY A VALID RANGE.")
-            return
-
-        country_flag, country_name = get_country_info(num_entries[0]["num"])
-
-        _s = load_settings()
-        otp_bonus = _s.get("otp_bonus", OTP_RATE)
-        num_lines = []
-        for entry in num_entries:
-            if entry["otp_now"] and entry["otp"]:
-                otp_safe = html.escape(str(entry["otp"]))
-                sms_safe = html.escape(str(entry.get("sms") or ""))
-                await update_db_balance(uid, otp_bonus)
-                add_otp_received(uid)
-                log_global_activity(uid, "OTP_RECEIVED", {"number": entry["num"], "otp": entry["otp"]})
-                line = (
-                    f"<blockquote>📞 NUMBER: <code>+{entry['num']}</code>\n"
-                    f"🔑 OTP: <code>{otp_safe}</code>"
-                    + (f"\n📩 SMS: <code>{sms_safe}</code>" if sms_safe else "")
-                    + f"\n💰 +{otp_bonus:.2f} BDT ADDED</blockquote>"
-                )
-            else:
-                line = f"<blockquote>📞 NUMBER: <code>+{entry['num']}</code></blockquote>"
-            num_lines.append(line)
-
-        num_list_text = "\n".join(num_lines)
-        any_instant = any(e["otp_now"] and e["otp"] for e in num_entries)
-        sms_status = "✅ OTP RECEIVED INSTANTLY!" if any_instant else "📩 SMS STATUS: ⏳ WAITING..."
-
-        final_text = (
-            f"✅ <b>YOUR NUMBER DETAILS</b> ✅\n\n"
-            f"<blockquote>🌍 COUNTRY: <code>{country_flag} {country_name}</code></blockquote>\n"
-            f"<blockquote>📶 RANGE: <code>{range_text}</code></blockquote>\n\n"
-            f"{num_list_text}\n\n"
-            f"<b>{sms_status}</b>"
-        )
-
-        # ★★★ PROCESS NUMBERS BUTTONS COLOR UPDATE (FOR SINGLE NUMBER) ★★★
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 SAME RANGE", callback_data="same_range", style="primary")],
-            [InlineKeyboardButton("📢 OTP GROUP", url="https://t.me/volt_x_lite_otp", style="primary")]
-        ])
-
-        await status_msg.edit_text(pe(final_text), parse_mode="HTML", reply_markup=keyboard)
-
-    except Exception as e:
-        print(f"Process Number Error: {e}")
-        await status_msg.edit_text(f"❌ System Error: {str(e)}")
-
-async def perform_otp_search(update, context, target_num):
-    uid = str(update.effective_user.id)
-
-    if is_user_banned(int(uid)):
-        await update.message.reply_text("🚫 YOU ARE BANNED 🚫", reply_markup=main_keyboard(int(uid)))
-        return
-
-    status_msg = await update.message.reply_text("🔍 SEARCHING IN SERVER...")
-
-    try:
-        api_key, base_url = get_api_credentials()
-        urls = get_api_urls(base_url)
-        headers = get_api_headers(api_key)
-        r = await client_async.get(urls["otp"], headers=headers)
-        res = r.json()
-        raw_otps = []
-        if isinstance(res, dict):
-            if "data" in res:
-                d = res["data"]
-                raw_otps = d if isinstance(d, list) else (d.get("otps") or d.get("active") or [])
-            else: raw_otps = res.get("otps") or []
-        elif isinstance(res, list): raw_otps = res
-        if True:
-            all_otps = raw_otps
-            found_otps = [o for o in all_otps if normalize_number(o.get("number", "")) == target_num]
-
-            if not found_otps:
-                error_msg = (
-                    "━━━━━━━━━━━━━━━━━━\n❌ NO OTP FOUND\n━━━━━━━━━━━━━━━━━━\n\n"
-                    f"📞 NUMBER:\n`+{target_num}`\n\n⏳ PLEASE TRY AGAIN LATER\n━━━━━━━━━━━━━━━━━━"
-                )
-                await status_msg.edit_text(error_msg, parse_mode="Markdown")
-                await update.message.reply_text("🔙 RETURNING TO MAIN MENU...", reply_markup=main_keyboard(int(uid)))
-            else:
-                await status_msg.delete()
-                paid_data = load_data(PAID_SMS_FILE)
-
-                for o in found_otps:
-                    full_sms = o.get('message') or o.get('otp') or o.get('sms') or "No Content Found"
-                    otp_code = extract_otp(full_sms)
-                    otp_id = str(o.get("otp_id", ""))
-                    sms_key = otp_id if otp_id else f"{target_num}_{full_sms}"
-
-                    if sms_key in paid_data:
-                        payment_status = "❌ ALREADY PAID"
-                    else:
-                        _s = load_settings()
-                        otp_bonus = _s.get("otp_bonus", OTP_RATE)
-                        await update_db_balance(uid, otp_bonus)
-                        add_otp_received(uid)
-                        log_global_activity(int(uid), "OTP_RECEIVED", {"number": target_num, "otp": otp_code})
-                        paid_data[sms_key] = {"uid": uid, "otp": otp_code}
-                        payment_status = f"💵 +{otp_bonus:.2f} BDT BALANCE ADDED"
-
-                    save_data(paid_data, PAID_SMS_FILE)
-                    country_flag, country_name = get_country_info(target_num)
-                    service_name = detect_service(full_sms)
-
-                    msg = (
-                        f"✅ <b>OTP FOUND!</b>\n\n"
-                        f"<blockquote>🌍 COUNTRY: <code>{country_flag} {country_name}</code></blockquote>\n"
-                        f"<blockquote>📱 SERVICE: <code>{service_name}</code></blockquote>\n"
-                        f"<blockquote>📞 NUMBER: <code>+{target_num}</code></blockquote>\n"
-                        f"<blockquote>🔑 OTP: <code>{html.escape(otp_code)}</code></blockquote>\n\n"
-                        f"<blockquote>📩 FULL SMS:\n<code>{html.escape(str(full_sms))}</code></blockquote>\n\n"
-                        f"<b>{payment_status}</b>"
-                    )
-                    await update.message.reply_text(pe(msg), parse_mode="HTML", reply_markup=main_keyboard(int(uid)))
-        else:
-            await status_msg.edit_text("❌ SERVER RETURNED AN ERROR.")
-            await update.message.reply_text("🔙 Returning to Main Menu...", reply_markup=main_keyboard(int(uid)))
-
-    except Exception as e:
-        try:
-            await status_msg.edit_text(f"❌ Error: {str(e)}")
+            with open(SESSIONS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
         except:
-            await update.message.reply_text(f"❌ Error: {str(e)}")
-        await update.message.reply_text("🔙 Returning to Main Menu...", reply_markup=main_keyboard(int(uid)))
+            pass
+    return {}
 
-# ==================== REFER AND EARN SECTION ====================
+def save_sessions(sessions):
+    with open(SESSIONS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(sessions, f, indent=2, ensure_ascii=False)
 
-async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+SETTINGS = load_settings()
+SESSIONS = load_sessions()
 
-    if is_user_banned(uid):
-        await update.message.reply_text("🚫 YOU ARE BANNED 🚫", reply_markup=main_keyboard(uid))
-        return
+def get_first_account(site_key):
+    accounts = get_site_accounts(site_key)
+    return accounts[0] if accounts else {"username": "", "password": ""}
 
-    user_data = get_user(uid)
-    bot_info = await context.bot.get_me()
+USERNAME = get_first_account("GROUP").get("username", "")
+PASSWORD = get_first_account("GROUP").get("password", "")
+BASE_URL = SETTINGS["GROUP"]["base_url"]
+LOGIN_PAGE_URL = SETTINGS["GROUP"]["login_page_url"]
+LOGIN_POST_URL = SETTINGS["GROUP"]["login_post_url"]
+AJAX_PATH = SETTINGS["GROUP"]["ajax_path"]
+HTTP_TIMEOUT = SETTINGS["GROUP"]["timeout"]
+CHECK_INTERVAL = SETTINGS["GROUP"]["check_interval"]
 
-    referral_link = f"https://t.me/{bot_info.username}?start={uid}"
-    successful_refers = get_referral_count(uid)
-    total_reward = float(successful_refers) * REFERRAL_PRICE
+USERNAME2 = get_first_account("Fly sms").get("username", "")
+PASSWORD2 = get_first_account("Fly sms").get("password", "")
+BASE_URL2 = SETTINGS["Fly sms"]["base_url"]
+LOGIN_PAGE_URL2 = SETTINGS["Fly sms"]["login_page_url"]
+LOGIN_POST_URL2 = SETTINGS["Fly sms"]["login_post_url"]
+AJAX_PATH2 = SETTINGS["Fly sms"]["ajax_path"]
+HTTP_TIMEOUT2 = SETTINGS["Fly sms"]["timeout"]
+CHECK_INTERVAL2 = SETTINGS["Fly sms"]["check_interval"]
 
-    refer_msg = (
-        f"🎁 <b>REFER AND EARN SYSTEM</b> 🎁\n\n"
-        f"<blockquote>🚀 INVITE FRIENDS &amp; EARN {int(REFERRAL_PRICE)} BDT EACH! 💸</blockquote>\n\n"
-        f"<b>🔗 YOUR REFERRAL LINK:</b>\n"
-        f"<blockquote><code>{referral_link}</code></blockquote>\n\n"
-        f"<b>📊 YOUR STATS:</b>\n"
-        f"<blockquote>👥 TOTAL REFERS: {successful_refers}\n"
-        f"💰 TOTAL EARNED: {format_balance(total_reward)} BDT</blockquote>\n\n"
-        f"✨ <b>SHARE LINK &amp; EARN MONEY!</b> ✨"
-    )
+USERNAME3 = get_first_account("Number_Panel").get("username", "")
+PASSWORD3 = get_first_account("Number_Panel").get("password", "")
+BASE_URL3 = SETTINGS["Number_Panel"]["base_url"]
+LOGIN_PAGE_URL3 = SETTINGS["Number_Panel"].get("login_page_url", "")
+LOGIN_POST_URL3 = SETTINGS["Number_Panel"].get("login_post_url", "")
+AJAX_PATH3 = SETTINGS["Number_Panel"].get("ajax_path", "")
+HTTP_TIMEOUT3 = SETTINGS["Number_Panel"]["timeout"]
+CHECK_INTERVAL3 = SETTINGS["Number_Panel"]["check_interval"]
 
-    await update.message.reply_text(
-        pe(refer_msg),
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("👥 YOUR REFERRAL", callback_data=f"my_ref_{uid}", style="primary")
-        ]])
-    )
+USERNAME4 = get_first_account("Bolt").get("username", "")
+PASSWORD4 = get_first_account("Bolt").get("password", "")
+BASE_URL4 = SETTINGS["Bolt"]["base_url"]
+LOGIN_PAGE_URL4 = SETTINGS["Bolt"]["login_page_url"]
+LOGIN_POST_URL4 = SETTINGS["Bolt"]["login_post_url"]
+AJAX_PATH4 = SETTINGS["Bolt"]["ajax_path"]
+HTTP_TIMEOUT4 = SETTINGS["Bolt"]["timeout"]
+CHECK_INTERVAL4 = SETTINGS["Bolt"]["check_interval"]
 
-# ==================== WITHDRAW FUNCTIONS ====================
+USERNAME5 = get_first_account("iVASMS").get("username", "")
+PASSWORD5 = get_first_account("iVASMS").get("password", "")
+IVASMS_API_URL = SETTINGS["iVASMS"].get("api_url", "https://maroon-wombat-183778.hostingersite.com/apiivasms/api.php")
+IVASMS_API_KEY = get_first_account("iVASMS").get("api_key", "")
+HTTP_TIMEOUT5 = SETTINGS["iVASMS"]["timeout"]
+CHECK_INTERVAL5 = SETTINGS["iVASMS"]["check_interval"]
+LOGIN_PAGE_URL5 = ""
+LOGIN_POST_URL5 = ""
+SMS_RECEIVED_URL5 = ""
+GET_SMS_URL5 = ""
+GET_SMS_NUMBER_URL5 = ""
+GET_SMS_MESSAGE_URL5 = ""
 
-async def withdraw_method_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    uid = update.effective_user.id
+USERNAME6 = get_first_account("MSI").get("username", "")
+PASSWORD6 = get_first_account("MSI").get("password", "")
+BASE_URL6 = SETTINGS["MSI"]["base_url"]
+LOGIN_PAGE_URL6 = SETTINGS["MSI"]["login_page_url"]
+LOGIN_POST_URL6 = SETTINGS["MSI"]["login_post_url"]
+AJAX_PATH6 = SETTINGS["MSI"]["ajax_path"]
+HTTP_TIMEOUT6 = SETTINGS["MSI"]["timeout"]
+CHECK_INTERVAL6 = SETTINGS["MSI"]["check_interval"]
 
-    if text == "CANCEL":
-        context.user_data["withdraw_mode"] = None
-        await update.message.reply_text("❌ WITHDRAW CANCELLED", reply_markup=main_keyboard(uid))
-        return
+USERNAME7 = get_first_account("proton SMS").get("username", "")
+PASSWORD7 = get_first_account("proton SMS").get("password", "")
+BASE_URL7 = SETTINGS["proton SMS"]["base_url"]
+LOGIN_PAGE_URL7 = SETTINGS["proton SMS"]["login_page_url"]
+LOGIN_POST_URL7 = SETTINGS["proton SMS"]["login_post_url"]
+AJAX_PATH7 = SETTINGS["proton SMS"]["ajax_path"]
+HTTP_TIMEOUT7 = SETTINGS["proton SMS"]["timeout"]
+CHECK_INTERVAL7 = SETTINGS["proton SMS"]["check_interval"]
 
-    method_map = {"BKASH": "BKASH", "NAGAD": "NAGAD", "ROCKET": "ROCKET", "BINANCE": "BINANCE"}
-    if text in method_map:
-        balance = get_user(uid)['balance']
-        context.user_data["withdraw_method"] = method_map[text]
-        context.user_data["withdraw_mode"] = "amount"
-        msg = (
-            f"<blockquote>💸 SEND YOUR AMOUNT!\n"
-            f"💵 TOTAL BALANCE: {format_balance(balance)} BDT</blockquote>\n\n"
-            f"<blockquote>📉 MINIMUM WITHDRAW {get_min_withdraw():.2f} BDT</blockquote>"
-        )
-        await update.message.reply_text(pe(msg), parse_mode="HTML", reply_markup=cancel_keyboard())
-    else:
-        await update.message.reply_text("⚠️ PLEASE SELECT A VALID PAYMENT METHOD!", reply_markup=withdraw_method_keyboard())
+USERNAME8 = get_first_account("IMS").get("username", "")
+PASSWORD8 = get_first_account("IMS").get("password", "")
+BASE_URL8 = SETTINGS["IMS"]["base_url"]
+LOGIN_PAGE_URL8 = SETTINGS["IMS"]["login_page_url"]
+LOGIN_POST_URL8 = SETTINGS["IMS"]["login_post_url"]
+AJAX_PATH8 = SETTINGS["IMS"]["ajax_path"]
+HTTP_TIMEOUT8 = SETTINGS["IMS"]["timeout"]
+CHECK_INTERVAL8 = SETTINGS["IMS"]["check_interval"]
 
-async def withdraw_amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    uid = update.effective_user.id
+USERNAME9 = get_first_account("Roxy SMS").get("username", "")
+PASSWORD9 = get_first_account("Roxy SMS").get("password", "")
+BASE_URL9 = SETTINGS["Roxy SMS"]["base_url"]
+LOGIN_PAGE_URL9 = SETTINGS["Roxy SMS"]["login_page_url"]
+LOGIN_POST_URL9 = SETTINGS["Roxy SMS"]["login_post_url"]
+AJAX_PATH9 = SETTINGS["Roxy SMS"]["ajax_path"]
+HTTP_TIMEOUT9 = SETTINGS["Roxy SMS"]["timeout"]
+CHECK_INTERVAL9 = SETTINGS["Roxy SMS"]["check_interval"]
 
-    if text == "CANCEL":
-        context.user_data["withdraw_mode"] = None
-        await update.message.reply_text("❌ WITHDRAW CANCELLED", reply_markup=main_keyboard(uid))
-        return
+USERNAME10 = get_first_account("TimeSMS").get("username", "")
+PASSWORD10 = get_first_account("TimeSMS").get("password", "")
+BASE_URL10 = SETTINGS["TimeSMS"]["base_url"]
+LOGIN_PAGE_URL10 = SETTINGS["TimeSMS"]["login_page_url"]
+LOGIN_POST_URL10 = SETTINGS["TimeSMS"]["login_post_url"]
+AJAX_PATH10 = SETTINGS["TimeSMS"]["ajax_path"]
+HTTP_TIMEOUT10 = SETTINGS["TimeSMS"]["timeout"]
+CHECK_INTERVAL10 = SETTINGS["TimeSMS"]["check_interval"]
 
-    try:
-        amount = float(text)
-    except:
-        await update.message.reply_text("⚠️ PLEASE SEND A VALID AMOUNT!", reply_markup=cancel_keyboard())
-        return
+COOKIES_FILE = "cookies.pkl"
+COOKIES_FILE_SITE3 = "cookies_site3.pkl"
+COOKIES_FILE_SITE4 = "cookies_site4.pkl"
+COOKIES_FILE_SITE5 = "cookies_ivasms.json"
+COOKIES_FILE_SITE6 = "cookies_msi.pkl"
+COOKIES_FILE_SITE7 = "cookies_share.pkl"
+COOKIES_FILE_SITE8 = "cookies_ims.pkl"
+COOKIES_FILE_SITE9 = "cookies_roxy.pkl"
+COOKIES_FILE_SITE10 = "cookies_timesms.pkl"
+LAST_MESSAGE_FILE = "last_message.txt"
+LAST_MESSAGE_FILE_SITE2 = "last_message_site2.txt"
+LAST_MESSAGE_FILE_SITE3 = "last_message_site3.txt"
+LAST_MESSAGE_FILE_SITE4 = "last_message_site4.txt"
+LAST_MESSAGE_FILE_SITE5 = "last_message_ivasms.txt"
+LAST_MESSAGE_FILE_SITE6 = "last_message_msi.txt"
+LAST_MESSAGE_FILE_SITE7 = "last_message_share.txt"
+LAST_MESSAGE_FILE_SITE8 = "last_message_ims.txt"
+LAST_MESSAGE_FILE_SITE9 = "last_message_roxy.txt"
+LAST_MESSAGE_FILE_SITE10 = "last_message_timesms.txt"
 
-    balance = get_user(uid)['balance']
-    min_withdraw = get_min_withdraw()
-    if amount < min_withdraw or amount > MAX_WITHDRAW:
-        await update.message.reply_text(f"📉 MIN: {min_withdraw:.2f} BDT | MAX: {MAX_WITHDRAW} BDT", reply_markup=cancel_keyboard())
-        return
-    if amount > balance:
-        await update.message.reply_text("🚫 INSUFFICIENT BALANCE!", reply_markup=cancel_keyboard())
-        return
+account_scrapers = {}
+account_sessions = {}
+account_last_seen = {}
+account_stop_events = {}
 
-    context.user_data["withdraw_amount"] = amount
-    context.user_data["withdraw_mode"] = "number"
-    await update.message.reply_text(
-        pe("📞 PLEASE SEND YOUR PAYMENT NUMBER!\n\n<blockquote>🔢 EXAMPLE: 017XXXXXXXX</blockquote>"),
-        parse_mode="HTML", reply_markup=cancel_keyboard()
-    )
+IDX_DATE_SITE3 = 0
+IDX_NUMBER_SITE3 = 2
+IDX_SMS_SITE3 = 5
 
-async def withdraw_number_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    uid = update.effective_user.id
+def create_session_group():
+    
+    sess = requests.Session()
+    sess.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
+    })
+    return sess
 
-    if text == "CANCEL":
-        context.user_data["withdraw_mode"] = None
-        await update.message.reply_text("❌ WITHDRAW CANCELLED", reply_markup=main_keyboard(uid))
-        return
+session1 = create_session_group()
+is_logged_in_site1 = False
+bot = telebot.TeleBot(BOT_TOKEN)
+last_seen_key = ""
+last_seen_key_site2 = ""
+last_seen_key_site3 = ""
+last_seen_key_site4 = ""
 
-    if not is_valid_bangladesh_number(text):
-        await update.message.reply_text("⚠️ PLEASE SEND VALID NUMBER! 017XXXXXXXX", reply_markup=cancel_keyboard())
-        return
+account_sessions = {}
 
-    method = context.user_data.get("withdraw_method")
-    amount = context.user_data.get("withdraw_amount")
-    payment_number = text
-    payment_id = generate_payment_id()
+session2 = requests.Session()
+session2.headers.update({
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10)",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "X-Requested-With": "XMLHttpRequest",
+    "Referer": BASE_URL2 + "/ints/agent/SMSCDRReports",
+    "Accept-Language": "ar-EG,ar;q=0.9,en-US;q=0.8"
+})
+is_logged_in_site2 = False
 
-    context.user_data["temp_withdraw"] = {
-        "method": method, "amount": amount,
-        "number": payment_number, "payment_id": payment_id
-    }
+session3 = requests.Session()
+session3.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
+})
+is_logged_in_site3 = False
 
-    msg = (
-        "✨ <b>YOUR PAYMENT DETAILS!</b> ✨\n\n"
-        f"<blockquote>📝 METHOD: {method}\n"
-        f"📞 NUMBER: {payment_number}\n\n"
-        f"✅ CORRECT → CONFIRM\n❌ WRONG → CANCEL</blockquote>"
-    )
-    await update.message.reply_text(
-        pe(msg), parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("❌ CANCEL", callback_data="withdraw_cancel", style="primary"),
-            InlineKeyboardButton("✅ CONFIRM", callback_data="withdraw_confirm", style="primary")
-        ]])
-    )
+session4 = requests.Session()
+session4.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
+})
+is_logged_in_site4 = False
 
-async def process_withdraw_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    uid = query.from_user.id
-    await query.answer()
+session6 = requests.Session()
+session6.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "X-Requested-With": "XMLHttpRequest",
+    "Referer": BASE_URL6 + "/agent/SMSCDRReports",
+    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
+})
+is_logged_in_site6 = False
+last_seen_key_site6 = ""
 
-    temp_data = context.user_data.get("temp_withdraw")
-    if not temp_data:
-        await query.message.reply_text("⚠️ SESSION EXPIRED.", reply_markup=main_keyboard(uid))
-        return
+session7 = requests.Session()
+session7.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "X-Requested-With": "XMLHttpRequest",
+    "Referer": BASE_URL7 + "/agent/SMSCDRReports",
+    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
+})
+is_logged_in_site7 = False
+last_seen_key_site7 = ""
 
-    method = temp_data["method"]
-    amount = temp_data["amount"]
-    payment_number = temp_data["number"]
-    payment_id = temp_data["payment_id"]
+session8 = requests.Session()
+session8.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+})
+is_logged_in_site8 = False
+last_seen_key_site8 = ""
 
-    new_balance = await update_db_balance(uid, -amount)
-    wr = load_withdraw_requests()
-    wr[str(payment_id)] = {
-        "user_id": uid, "method": method, "amount": amount,
-        "number": payment_number, "payment_id": payment_id,
-        "status": "pending", "timestamp": datetime.now().isoformat()
-    }
-    save_withdraw_requests(wr)
+session9 = requests.Session()
+session9.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+})
+is_logged_in_site9 = False
+last_seen_key_site9 = ""
 
-    await query.message.edit_text(
-        pe(f"✅ <b>WITHDRAWAL REQUEST SUBMITTED</b> ✅\n\n"
-        f"<blockquote>📝 METHOD: <code>{method}</code>\n"
-        f"📞 NUMBER: <code>{payment_number}</code>\n"
-        f"💰 AMOUNT: <code>{format_balance(amount)} BDT</code>\n"
-        f"🆔 ID: <code>{payment_id}</code></blockquote>"),
-        parse_mode="HTML"
-    )
-    await context.bot.send_message(uid, pe("🎉 <b>WITHDRAW REQUEST SUBMITTED!</b>"), parse_mode="HTML", reply_markup=main_keyboard(uid))
+session10 = requests.Session()
+session10.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+})
+is_logged_in_site10 = False
+last_seen_key_site10 = ""
 
-    admin_msg = (
-        f"✅ <b>NEW WITHDRAWAL REQUEST</b>\n\n"
-        f"<blockquote>🆔 USER: <code>{uid}</code>\n"
-        f"📝 METHOD: <code>{method}</code>\n"
-        f"📞 NUMBER: <code>{payment_number}</code>\n"
-        f"💰 AMOUNT: <code>{format_balance(amount)} BDT</code>\n"
-        f"🆔 ID: <code>{payment_id}</code></blockquote>"
-    )
-    admin_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("❌ REJECT", callback_data=f"admin_reject_{payment_id}", style="primary"),
-        InlineKeyboardButton("✅ APPROVE", callback_data=f"admin_approve_{payment_id}", style="primary")
-    ]])
-    for admin_id in get_admin_ids():
+session5 = requests.Session()
+session5.verify = False
+session5.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive"
+})
+is_logged_in_site5 = False
+csrf_token_site5 = None
+last_seen_key_site5 = ""
+
+COUNTRIES_FILE = "countriesi.json"
+CHANNELS_FILE = "channelsi.json"
+USERS_FILE = "usersi.json"
+ADMINS_FILE = "admins.ijson"
+BANNED_FILE = "bannedi.json"
+OTP_GROUP_FILE = "otp_groupi.json"
+GROUPS_FILE = "groupsi.json"
+STATISTICS_FILE = "statisticsi.json"
+REFERRALS_FILE = "referralsi.json"
+REFERRAL_SETTINGS_FILE = "referral_settings.json"
+WITHDRAWAL_REQUESTS_FILE = "withdrawal_requests.json"
+WITHDRAWAL_METHODS_FILE = "withdrawal_methods.json"
+WELCOME_MESSAGES_FILE = "welcome_messages.json"
+NUMBERS_ADMINS_FILE = "numbers_admins.json"
+COUNTRIES = {}
+CHANNELS = []
+USERS = {}
+ADMINS = [7325261765,8598137047]
+BANNED = []
+OTP_GROUP = -1003852565392
+GROUPS = [-1003852565392]
+REFERRALS = {}
+NUMBERS_ADMINS = []
+
+def load_numbers_admins():
+    global NUMBERS_ADMINS
+    if os.path.exists(NUMBERS_ADMINS_FILE):
         try:
-            await context.bot.send_message(admin_id, pe(admin_msg), parse_mode="HTML", reply_markup=admin_kb)
-        except Exception as e:
-            print(f"Admin notify fail {admin_id}: {e}")
+            with open(NUMBERS_ADMINS_FILE, "r", encoding="utf-8") as f:
+                NUMBERS_ADMINS = json.load(f)
+        except:
+            NUMBERS_ADMINS = []
+    return NUMBERS_ADMINS
 
-    context.user_data["temp_withdraw"] = None
-    context.user_data["withdraw_mode"] = None
+def save_numbers_admins():
+    with open(NUMBERS_ADMINS_FILE, "w", encoding="utf-8") as f:
+        json.dump(NUMBERS_ADMINS, f, indent=2, ensure_ascii=False)
 
-async def process_withdraw_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    uid = query.from_user.id
-    await query.answer()
-    context.user_data["temp_withdraw"] = None
-    context.user_data["withdraw_mode"] = None
-    await query.message.edit_text("❌ WITHDRAW CANCELLED")
-    await context.bot.send_message(uid, "🔹 PLEASE USE THE BUTTONS BELOW:", reply_markup=main_keyboard(uid))
+def is_numbers_admin(user_id):
+    return user_id in NUMBERS_ADMINS or is_admin(user_id)
 
-# ==================== ADMIN PANEL - WITHDRAW APPROVAL ====================
+DEFAULT_REFERRAL_SETTINGS = {
+    "codes_required_for_referral": 10,
+    "referral_bonus": 0.05,
+    "code_bonus": 0.002,
+    "min_withdrawal": 5.0,
+    "enabled": True
+}
 
-async def admin_approve_withdraw(update, context, payment_id):
-    query = update.callback_query
-    await query.answer()
-    wr = load_withdraw_requests()
-    if payment_id not in wr:
-        await query.message.reply_text("⚠️ REQUEST NOT FOUND!")
-        return
-    rd = wr[payment_id]
-    if rd.get("status") != "pending":
-        await query.message.reply_text("⚠️ THIS REQUEST HAS ALREADY BEEN PROCESSED.")
-        return
-    uid = rd["user_id"]
-    method = rd["method"]
-    amount = rd["amount"]
-    payment_number = rd["number"]
-    wr[payment_id]["status"] = "approved"
-    save_withdraw_requests(wr)
+DEFAULT_WELCOME_MESSAGES = {
+    "ar": "🌐 <b>مرحباً بك في بوت الأرقام المؤقتة!</b>\n\n📱 احصل على رقم مؤقت فوراً\n🔒 آمن وسريع\n💰 اكسب من الإحالات والأكواد\n\nاختر من القائمة:",
+    "en": "🌐 <b>Welcome to Temporary Numbers Bot!</b>\n\n📱 Get a temporary number instantly\n🔒 Secure and fast\n💰 Earn from referrals and codes\n\nChoose from the menu:"
+}
 
-    try:
-        await context.bot.send_message(
-            uid,
-            pe(f"🎉 <b>WITHDRAWAL APPROVED!</b>\n\n"
-            f"<blockquote>📝 METHOD: <code>{method}</code>\n"
-            f"📞 NUMBER: <code>{payment_number}</code>\n"
-            f"💰 AMOUNT: <code>{format_balance(amount)} BDT</code></blockquote>"),
-            parse_mode="HTML"
-        )
-    except:
-        pass
-    await query.message.edit_text(f"✅ APPROVED | User: {uid} | Amount: {format_balance(amount)} BDT")
+DEFAULT_BUTTON_LINKS = {
+    "group_link": "https://t.me/alorhawa",
+    "channel_link": "https://t.me/alorhawa",
+    "developer_link": "https://t.me/alorhawa"
+}
 
-async def admin_reject_withdraw(update, context, payment_id):
-    query = update.callback_query
-    await query.answer()
-    wr = load_withdraw_requests()
-    if payment_id not in wr:
-        await query.message.reply_text("⚠️ REQUEST NOT FOUND!")
-        return
-    rd = wr[payment_id]
-    if rd.get("status") != "pending":
-        await query.message.reply_text("⚠️ THIS REQUEST HAS ALREADY BEEN PROCESSED.")
-        return
-    uid = rd["user_id"]
-    amount = rd["amount"]
-    wr[payment_id]["status"] = "rejected"
-    save_withdraw_requests(wr)
-    await update_db_balance(uid, amount)
+BUTTON_LINKS_FILE = "button_links.json"
+OTP_BUTTONS_FILE = "otp_buttons.json"
 
-    try:
-        await context.bot.send_message(uid, "❌ **WITHDRAWAL REQUEST REJECTED**\n\nContact admin for more info.", parse_mode="Markdown")
-    except:
-        pass
-    await query.message.edit_text(f"❌ REJECTED | User: {uid} | Amount: {format_balance(amount)} BDT")
+DEFAULT_OTP_BUTTONS = [
+    {"name": "𝙂𝙍𝙊𝙐𝙋", "url": "https://t.me/alorhawa"},
+    {"name": "𝘽𝙊𝙏", "url": "https://t.me/alorhawabot "}, 
+        {"name": "𝙊𝙏𝙋", "url": "https://t.me/alorhawa"}, 
+           {"name": "❍𓏺 𝗨𝗻𝗖𝗹𝗘 | 𝗗𝟕 𓏺 𝗕𝗘𝗣𝗢↬", "url": "https://t.me/alorhawa"}
+]
 
-async def show_pending_withdrawals(update, context):
-    pending = [
-        (payment_id, request)
-        for payment_id, request in load_withdraw_requests().items()
-        if request.get("status") == "pending"
+def load_otp_buttons():
+    if os.path.exists(OTP_BUTTONS_FILE):
+        try:
+            with open(OTP_BUTTONS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return DEFAULT_OTP_BUTTONS.copy()
+
+def save_otp_buttons(buttons):
+    with open(OTP_BUTTONS_FILE, "w", encoding="utf-8") as f:
+        json.dump(buttons, f, indent=2, ensure_ascii=False)
+
+OTP_BUTTONS = load_otp_buttons()
+
+def format_decimal(value):
+    
+    if value == 0:
+        return "0"
+    
+    formatted = f"{value:.10f}".rstrip('0').rstrip('.')
+    
+    if '.' in formatted:
+        integer_part, decimal_part = formatted.split('.')
+        if len(decimal_part) > 5:
+            decimal_part = decimal_part[:5]
+        return f"{integer_part}.{decimal_part}"
+    return formatted
+
+def load_button_links():
+    if os.path.exists(BUTTON_LINKS_FILE):
+        try:
+            with open(BUTTON_LINKS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return DEFAULT_BUTTON_LINKS.copy()
+
+def save_button_links(links):
+    with open(BUTTON_LINKS_FILE, "w", encoding="utf-8") as f:
+        json.dump(links, f, indent=2, ensure_ascii=False)
+
+BUTTON_LINKS = load_button_links()
+STATISTICS = {
+    "total_codes": 0,
+    "codes_today": 0,
+    "codes_this_week": 0,
+    "codes_this_month": 0,
+    "last_reset_day": None,
+    "last_reset_week": None,
+    "last_reset_month": None,
+    "daily_history": {}
+}
+
+user_states = {}
+broadcast_state = {}
+
+TEXTS = {
+    "ar": {
+        "welcome": "🌐 <b>مرحباً بك في بوت الأرقام!</b>",
+        "instructions": "📖 <b>دليل البوت</b>\n\n<b>📱 استلام الأكواد:</b>\n1️⃣ اضغط Get Number\n2️⃣ اختر الدولة والرقم\n3️⃣ استخدم الرقم للتسجيل\n4️⃣ الكود يصلك تلقائياً\n\n<b>💰 الأرباح:</b>\n• بونص عن كل كود\n• بونص إحالة الأصدقاء\n\n<b>💵 السحب:</b>\nفودافون كاش - USDT - Binance",
+        "subscription_locked": "🔒 <b>الوصول مقفل. انضم للقنوات ثم تحقق.</b>",
+        "subscription_verified": "✅ <b>تم التحقق من الاشتراك!</b>\n\n🌐 <b>مرحباً بك في بوت الأرقام!</b>",
+        "subscription_not_verified": "❌ لم تنضم لجميع القنوات بعد!",
+        "choose_country": "📲 𝗚𝗲𝘁 𝗡𝘂𝗺𝗯𝗲𝗿",
+        "my_account": "👤 𝗠𝘆 𝗔𝗰𝗰𝗼𝘂𝗻𝘁",
+        "admin_panel": "🎛 لوحة الإدارة",
+        "help": "❓ مساعدة",
+        "verify_subscription": "✅ تحقق من الاشتراك",
+        "banned": "🚫 أنت محظور من استخدام هذا البوت.",
+        "unauthorized": "❌ غير مصرح لك!",
+        "select_country": "📱 <b>اختر المنصة:</b>",
+        "back": "🔙 رجوع",
+        "select_number": "📞 <b>اختر رقم لـ {country}:</b>",
+        "number_locked": "⚠️ هذا الرقم مستخدم حالياً من شخص آخر. اختر رقم آخر.",
+        "your_number": "📞 <b>رقمك لـ {country}:</b>\n<code>+{number}</code>\n\n⏳ <b>في انتظار الكود...</b> 📱\n\n💬 سيتم إرسال الكود هنا مباشرة!",
+        "change_number": "🔄 تغيير الرقم",
+        "change_country": "🌍 تغيير الدولة",
+        "account_info": "👤 <b>معلومات حسابك:</b>\n\n🆔 <b>معرفك:</b> <code>{user_id_value}</code>\n📅 <b>تاريخ الانضمام:</b> {join_date}\n📊 <b>الأكواد المستلمة:</b> {activations}\n🌐 <b>اللغة:</b> {language}\n\n💡 <b>حالة رقمك:</b>\n{number_status}",
+        "no_number": "❌ لا يوجد رقم حالياً",
+        "has_number": "✅ رقم نشط لـ {country}",
+        "change_language": "🌐 تغيير اللغة",
+        "language_changed": "✅ تم تغيير اللغة إلى العربية",
+        "add_channel": "➕ إضافة قناة اشتراك",
+        "remove_channel": "🗑 حذف قناة",
+        "statistics": "📊 الإحصائيات",
+        "broadcast": "📣 إذاعة",
+        "add_admin": "🔧 إضافة مشرف",
+        "remove_admin": "🗑 حذف مشرف",
+        "ban_user": "🚫 حظر مستخدم",
+        "unban_user": "✅ إلغاء حظر",
+        "set_otp_group": "📱 تعيين مجموعة OTP",
+        "close": "❌ إغلاق",
+        "new_code": "🔔 <b>كود جديد!</b>\n\n📞 <b>الرقم:</b> <code>+{number}</code>\n💬 <b>الكود:</b> <code>{code}</code>\n\n⏰ <b>الوقت:</b> {time}",
+        "no_countries_available": "❌ لا توجد دول متاحة حالياً!",
+        "country_not_available": "❌ دولة غير متاحة!",
+        "no_numbers_available": "❌ لا توجد أرقام متاحة!",
+        "number_reserved": "❌ هذا الرقم محجوز حالياً!",
+        "select_country_first": "❌ اختر المنصة أولاً!",
+        "number_changed": "✅ تم تغيير الرقم!",
+        "admin_panel_title": "🎛 <b>لوحة الإدارة</b>",
+        "statistics_title": "📊 <b>إحصائيات البوت</b>\n\n👥 <b>إجمالي المستخدمين:</b> {users_count}\n🔢 <b>إجمالي الأكواد:</b> {total_codes}\n\n📅 <b>أكواد اليوم:</b> {codes_today}\n📆 <b>أكواد هذا الأسبوع:</b> {codes_this_week}\n📊 <b>أكواد هذا الشهر:</b> {codes_this_month}",
+        "broadcast_prompt": "📣 <b>إذاعة رسالة</b>\n\nأرسل الرسالة التي تريد إذاعتها لجميع المستخدمين:",
+        "broadcast_sent": "✅ <b>تم الإرسال!</b>\n\n📤 نجح: {success}\n❌ فشل: {failed}",
+        "set_otp_group_prompt": "📱 <b>تعيين مجموعة OTP</b>\n\nأرسل معرف المجموعة (Group ID) التي تريد إرسال الأكواد إليها:",
+        "otp_group_set": "✅ <b>تم تعيين مجموعة OTP!</b>\n\n🆔 Group ID: <code>{group_id}</code>",
+        "invalid_id": "❌ معرف غير صحيح! أرسل رقم ID صحيح",
+        "add_channel_id_prompt": "➕ <b>إضافة قناة اشتراك إجباري</b>\n\n⚠️ يقبل فقط القنوات (لا مجموعات)\n\nأرسل معرف أو رابط القناة:\n• @channel_name\n• https://t.me/channel_name",
+        "add_channel_name_prompt": "",
+        "add_channel_url_prompt": "",
+        "channel_added": "✅ <b>تم إضافة القناة!</b>\n\n📢 القناة: {channel_name}\n🔗 الرابط: {channel_url}",
+        "user_banned": "✅ <b>تم حظر المستخدم!</b>\n\n🆔 User ID: <code>{target_user_id}</code>",
+        "user_unbanned": "✅ <b>تم إلغاء حظر المستخدم!</b>\n\n🆔 User ID: <code>{target_user_id}</code>",
+        "admin_added": "✅ <b>تم إضافة المشرف!</b>\n\n🆔 User ID: <code>{target_user_id}</code>",
+        "admin_removed": "✅ <b>تم حذف المشرف!</b>\n\n🆔 User ID: <code>{target_user_id}</code>",
+        "channel_removed": "✅ <b>تم حذف القناة!</b>\n\n📢 القناة: {channel_name}",
+        "no_channels": "⚠️ لا توجد قنوات!",
+        "no_banned_users": "⚠️ لا يوجد مستخدمون محظورون!",
+        "no_admins": "⚠️ لا يوجد مشرفون!",
+        "owner_only": "❌ هذه الميزة للمالك فقط!",
+        "ban_user_prompt": "🚫 <b>حظر مستخدم</b>\n\nأرسل معرف المستخدم (User ID) الذي تريد حظره:",
+        "unban_user_prompt": "✅ <b>إلغاء حظر مستخدم</b>\n\n📋 <b>المستخدمون المحظورون:</b>\n{banned_list}\n\nأرسل معرف المستخدم لإلغاء حظره:",
+        "add_moderator_prompt": "🔧 <b>إضافة مشرف</b>\n\nأرسل معرف المستخدم (User ID) الذي تريد جعله مشرفاً:",
+        "remove_moderator_prompt": "🗑 <b>حذف مشرف</b>\n\n📋 <b>المشرفون الحاليون:</b>\n{admins_list}\n\nأرسل معرف المشرف لحذفه:",
+        "remove_channel_prompt": "🗑 <b>حذف قناة</b>\n\n📋 <b>القنوات الحالية:</b>\n{channels_list}\n\nأرسل رقم القناة أو معرفها لحذفها:",
+        "channel_not_found": "❌ قناة غير موجودة!",
+        "otp_group_status": "📱 <b>مجموعة الأكواد:</b>\n{status}",
+        "otp_group_set_status": "✅ مجموعة محددة: <code>{group_id}</code>",
+        "otp_group_not_set": "❌ لم يتم تحديد مجموعة",
+        "delete_otp_group": "🗑 حذف المجموعة",
+        "otp_group_deleted": "✅ تم حذف مجموعة الأكواد!",
+        "top_users": "👥 أفضل 10 مستخدمين",
+        "top_users_title": "👥 <b>أفضل 10 مستخدمين</b>\n<i>حسب عدد الأكواد المستلمة</i>\n\n",
+        "no_users_yet": "⚠️ لا يوجد مستخدمون بعد!",
+        "user_joined": "🎉 <b>انضم مستخدم جديد!</b>\n\n👤 الاسم: {name}\n🆔 ID: <code>{user_id}</code>\n📅 الوقت: {time}",
+        "edit_button_labels_ar": "🇸🇦 تعديل الأزرار بالعربية",
+        "edit_button_labels_en": "🇬🇧 تعديل الأزرار بالإنجليزية",
+        "edit_button_labels_lang": "🏷️ <b>تعديل أسماء الأزرار</b>\n\nاختر اللغة:",
+        "edit_labels_ar_menu": "🇸🇦 <b>تعديل الأزرار بالعربية</b>\n\nاختر الزر الذي تريد تعديله:",
+        "edit_labels_en_menu": "🇬🇧 <b>Edit Button Labels (English)</b>\n\nChoose the button you want to edit:",
+        "edit_choose_country_ar": "تعديل \"اختر دولة\"",
+        "edit_my_account_ar": "تعديل \"حسابي\"",
+        "edit_help_ar": "تعديل \"𝗛𝗲𝗹𝗽❓\"",
+        "edit_choose_country_en": "Edit \"Choose Country\"",
+        "edit_my_account_en": "Edit \"My Account\"",
+        "edit_help_en": "Edit \"Help\"",
+        "send_new_label": "📝 أرسل الاسم الجديد للزر:",
+        "label_updated": "✅ تم تحديث اسم الزر بنجاح!",
+        "manage_otp_group": "📱 إدارة مجموعة الأكواد",
+        "welcome_admin": "🌐 <b>مرحباً بك في بوت OTP!</b>\n\nاختر دولة لاستقبال رقم وانتظر الأكواد.\n\nكمشرف، يمكنك أيضاً الوصول للوحة الأدمن.",
+        "choose_language": "🌍 <b>اختر اللغة / Choose Language</b>",
+        "group_hello_admin": "👋 مرحباً! أنا بوت OTP.\n\n⚠️ <b>ملاحظة:</b> لا يمكن إضافة الجروبات تلقائياً.\nيجب على المشرف إضافة هذا الجروب من لوحة الأدمن.",
+        "group_hello": "👋 مرحباً! أنا بوت OTP.\n\nللاستخدام، تواصل معي بشكل خاص.",
+        "total_users": "👥 <b>إجمالي المستخدمين:</b>",
+        "total_codes": "🔢 <b>إجمالي الأكواد:</b>",
+        "codes_today": "📅 <b>أكواد اليوم:</b>",
+        "codes_week": "📆 <b>أكواد هذا الأسبوع:</b>",
+        "codes_month": "📊 <b>أكواد هذا الشهر:</b>",
+        "users_text": "users / مستخدم",
+        "developer_btn": "🆘 المطور",
+        "verify_btn": "✅ تحقق",
+        "select_server_title": "🖥️ <b>اختر السيرفر</b>",
+        "select_server_desc": "📌 كل سيرفر يحتوي على مجموعة مختلفة من الدول والأرقام:",
+        "select_server_hint": "🔻 <i>اختر السيرفر لعرض الدول المتاحة</i>",
+        "select_platform_title": "📱 <b>اختر المنصة في {server}</b>",
+        "select_platform_hint": "🔻 <i>اختر المنصة التي تريد استقبال أكوادها</i>",
+        "no_numbers_here": "❌ <b>لا يوجد أرقام هنا</b>",
+        "no_countries_title": "❌ <b>لا توجد دول متاحة</b>",
+        "server_label": "🖥️ <b>السيرفر:</b>",
+        "platform_label": "📱 <b>المنصة:</b>",
+        "no_countries_hint": "🔻 <i>لا توجد دول متاحة لهذه المنصة في هذا السيرفر حالياً</i>",
+        "available_countries_title": "🌍 <b>الدول المتاحة</b>",
+        "select_country_hint": "🔻 <i>اختر الدولة التي تريد استقبال أكوادها</i>",
+        "number_selected_success": "✅ <b>تم اختيار الرقم بنجاح!</b>",
+        "waiting_for_code": "⏳ 𝓦𝓪𝓲𝓽𝓲𝓷𝓰 𝓯𝓸𝓻 𝓽𝓱𝓮 𝓬𝓸𝓭𝓮... 📱",
+        "code_will_be_sent": "سيتم إرسال الكود لك مباشرة عند وصوله!",
+        "change_number_btn": "🔄 تغيير الرقم",
+        "change_country_btn": "🌍 تغيير الدولة",
+        "back_to_servers": "𝗕𝗮𝗰𝗸 𝘁𝗼 𝘀𝗲𝗿𝘃𝗲𝗿𝘀",
+        "error_msg": "❌ خطأ: {error}",
+        "referral_success": "🎉 <b>تم تسجيلك بنجاح عبر رابط الإحالة!</b>\n\nاستمتع باستخدام البوت!"
+    },
+    "en": {
+        "welcome": "╔════✦  𝓑𝓞𝓣𝓟  ✦════╗\n\n❖  𝗚𝗿𝗮𝗯 𝗮 𝘁𝗲𝗺𝗽𝗼𝗿𝗮𝗿𝘆 𝗻𝘂𝗺𝗯𝗲𝗿 𝗶𝗻𝘀𝘁𝗮𝗻𝘁𝗹𝘆\n❖  𝗟𝗶𝗴𝗵𝘁𝗻𝗶𝗻𝗴-𝗳𝗮𝘀𝘁 & 𝗳𝘂𝗹𝗹𝘆 𝘀𝗲𝗰𝘂𝗿𝗲\n❖  𝗪𝗼𝗿𝗸𝘀 𝗳𝗼𝗿 𝗮𝗹𝗹 𝗰𝗼𝘂𝗻𝘁𝗿𝗶𝗲𝘀\n\n•  𝗦𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗰𝗼𝘂𝗻𝘁𝗿𝘆\n•  𝗚𝗲𝘁 𝘆𝗼𝘂𝗿 𝗻𝘂𝗺𝗯𝗲𝗿 𝗶𝗺𝗺𝗲𝗱𝗶𝗮𝘁𝗲𝗹𝘆\n\n╚════✦  𝓑𝓞𝓣𝓟  ✦════╝",
+        "instructions": "📖 <b>Bot Guide</b>\n\n<b>📱 Receiving Codes:</b>\n1️⃣ Click Get Number\n2️⃣ Choose country and number\n3️⃣ Use number to register\n4️⃣ Code arrives automatically\n\n<b>💰 Earnings:</b>\n• Bonus for each code\n• Referral bonus for friends\n\n<b>💵 Withdrawal:</b>\nVodafone Cash - USDT - Binance",
+        "subscription_locked": "🔒 <b>Access locked. Join channels then verify.</b>",
+        "subscription_verified": "✅ <b>Subscription verified!</b>\n\n🌐 <b>Welcome to Numbers Bot!</b>",
+        "subscription_not_verified": "❌ You haven't joined all channels yet!",
+        "choose_country": "📲 𝗚𝗲𝘁 𝗡𝘂𝗺𝗯𝗲𝗿",
+        "my_account": "👤 𝗠𝘆 𝗔𝗰𝗰𝗼𝘂𝗻𝘁",
+        "admin_panel": "🎛 Admin Panel",
+        "help": "❓ Help",
+        "verify_subscription": "✅ Verify Subscription",
+        "banned": "🚫 You are banned from using this bot.",
+        "unauthorized": "❌ Unauthorized!",
+        "select_country": "🌍 <b>Select Country:</b>",
+        "back": "🔙 Back",
+        "select_number": "📞 <b>Select a number for {country}:</b>",
+        "number_locked": "⚠️ This number is currently used by someone else. Choose another number.",
+        "your_number": "📞 <b>Your number for {country}:</b>\n<code>+{number}</code>\n\n⏳ <b>Waiting for code...</b> 📱\n\n💬 Code will be sent here directly!",
+        "change_number": "🔄 Change Number",
+        "change_country": "🌍 Change Country",
+        "account_info": "👤 <b>Your Account Info:</b>\n\n🆔 <b>ID:</b> <code>{user_id_value}</code>\n📅 <b>Join Date:</b> {join_date}\n📊 <b>Codes Received:</b> {activations}\n🌐 <b>Language:</b> {language}\n\n💡 <b>Number Status:</b>\n{number_status}",
+        "no_number": "❌ No number currently",
+        "has_number": "✅ Active number for {country}",
+        "change_language": "🌐 Change Language",
+        "language_changed": "✅ Language changed to English",
+        "add_channel": "➕ Add Channel",
+        "remove_channel": "🗑 Remove Channel",
+        "statistics": "📊 Statistics",
+        "broadcast": "📣 Broadcast",
+        "add_admin": "🔧 Add Admin",
+        "remove_admin": "🗑 Remove Admin",
+        "ban_user": "🚫 Ban User",
+        "unban_user": "✅ Unban User",
+        "set_otp_group": "📱 Set OTP Group",
+        "close": "❌ Close",
+        "new_code": "🔔 <b>New Code!</b>\n\n📞 <b>Number:</b> <code>+{number}</code>\n💬 <b>Code:</b> <code>{code}</code>\n\n⏰ <b>Time:</b> {time}",
+        "no_countries_available": "❌ No countries available!",
+        "country_not_available": "❌ Country not available!",
+        "no_numbers_available": "❌ No numbers available!",
+        "number_reserved": "❌ This number is reserved!",
+        "select_country_first": "❌ Select a country first!",
+        "number_changed": "✅ Number changed!",
+        "admin_panel_title": "🎛 <b>Admin Panel</b>",
+        "statistics_title": "📊 <b>Bot Statistics</b>\n\n👥 <b>Total Users:</b> {users_count}\n🔢 <b>Total Codes:</b> {total_codes}\n\n📅 <b>Today's Codes:</b> {codes_today}\n📆 <b>This Week's Codes:</b> {codes_this_week}\n📊 <b>This Month's Codes:</b> {codes_this_month}",
+        "broadcast_prompt": "📣 <b>Broadcast Message</b>\n\nSend the message you want to broadcast to all users:",
+        "broadcast_sent": "✅ <b>Sent!</b>\n\n📤 Success: {success}\n❌ Failed: {failed}",
+        "set_otp_group_prompt": "📱 <b>Set OTP Group</b>\n\nSend the Group ID where you want to receive OTP codes:",
+        "otp_group_set": "✅ <b>OTP Group set!</b>\n\n🆔 Group ID: <code>{group_id}</code>",
+        "invalid_id": "❌ Invalid ID! Send a valid ID number",
+        "add_channel_id_prompt": "➕ <b>Add Subscription Channel</b>\n\nSend the channel ID (example: @channelname or -100...):",
+        "add_channel_name_prompt": "✅ <b>Channel ID saved!</b>\n\nNow send the channel name:",
+        "add_channel_url_prompt": "✅ <b>Channel name saved!</b>\n\nNow send the channel link (https://t.me/...):",
+        "channel_added": "✅ <b>Channel added!</b>\n\n📢 Channel: {channel_name}\n🔗 Link: {channel_url}",
+        "user_banned": "✅ <b>User banned!</b>\n\n🆔 User ID: <code>{target_user_id}</code>",
+        "user_unbanned": "✅ <b>User unbanned!</b>\n\n🆔 User ID: <code>{target_user_id}</code>",
+        "admin_added": "✅ <b>Admin added!</b>\n\n🆔 User ID: <code>{target_user_id}</code>",
+        "admin_removed": "✅ <b>Admin removed!</b>\n\n🆔 User ID: <code>{target_user_id}</code>",
+        "channel_removed": "✅ <b>Channel removed!</b>\n\n📢 Channel: {channel_name}",
+        "no_channels": "⚠️ No channels!",
+        "no_banned_users": "⚠️ No banned users!",
+        "no_admins": "⚠️ No admins!",
+        "owner_only": "❌ This feature is for owner only!",
+        "ban_user_prompt": "🚫 <b>Ban User</b>\n\nSend the User ID you want to ban:",
+        "unban_user_prompt": "✅ <b>Unban User</b>\n\n📋 <b>Banned Users:</b>\n{banned_list}\n\nSend the User ID to unban:",
+        "add_moderator_prompt": "🔧 <b>Add Admin</b>\n\nSend the User ID you want to make admin:",
+        "remove_moderator_prompt": "🗑 <b>Remove Admin</b>\n\n📋 <b>Current Admins:</b>\n{admins_list}\n\nSend the admin ID to remove:",
+        "remove_channel_prompt": "🗑 <b>Remove Channel</b>\n\n📋 <b>Current Channels:</b>\n{channels_list}\n\nSend the channel number or ID to remove it:",
+        "channel_not_found": "❌ Channel not found!",
+        "otp_group_status": "📱 <b>OTP Group:</b>\n{status}",
+        "otp_group_set_status": "✅ Group set: <code>{group_id}</code>",
+        "otp_group_not_set": "❌ No group set",
+        "delete_otp_group": "🗑 Delete Group",
+        "otp_group_deleted": "✅ OTP group deleted!",
+        "top_users": "👥 Top 10 Users",
+        "top_users_title": "👥 <b>Top 10 Users</b>\n<i>By codes received</i>\n\n",
+        "no_users_yet": "⚠️ No users yet!",
+        "user_joined": "🎉 <b>New User Joined!</b>\n\n👤 Name: {name}\n🆔 ID: <code>{user_id}</code>\n📅 Time: {time}",
+        "edit_button_labels_ar": "🇸🇦 Edit Arabic Buttons",
+        "edit_button_labels_en": "🇬🇧 Edit English Buttons",
+        "edit_button_labels_lang": "🏷️ <b>Edit Button Labels</b>\n\nChoose language:",
+        "edit_labels_ar_menu": "🇸🇦 <b>تعديل الأزرار بالعربية</b>\n\nاختر الزر الذي تريد تعديله:",
+        "edit_labels_en_menu": "🇬🇧 <b>Edit Button Labels (English)</b>\n\nChoose the button you want to edit:",
+        "edit_choose_country_ar": "تعديل \"اختر دولة\"",
+        "edit_my_account_ar": "تعديل \"حسابي\"",
+        "edit_help_ar": "تعديل \"𝗛𝗲𝗹𝗽❓\"",
+        "edit_choose_country_en": "Edit \"Choose Country\"",
+        "edit_my_account_en": "Edit \"My Account\"",
+        "edit_help_en": "Edit \"Help\"",
+        "send_new_label": "📝 Send the new button name:",
+        "label_updated": "✅ Button label updated successfully!",
+        "manage_otp_group": "📱 Manage OTP Group",
+        "welcome_admin": "🌐 <b>Welcome to OTP Bot!</b>\n\nChoose a country to receive a number and wait for OTP.\n\nAs an admin, you can also access the Admin Panel.",
+        "choose_language": "🌍 <b>اختر اللغة / Choose Language</b>",
+        "group_hello_admin": "👋 Hello! I'm the OTP Bot.\n\n⚠️ <b>Note:</b> Groups cannot be added automatically.\nThe admin must add this group from the admin panel.",
+        "group_hello": "👋 Hello! I'm the OTP Bot.\n\nTo use me, contact me privately.",
+        "total_users": "👥 <b>Total Users:</b>",
+        "total_codes": "🔢 <b>Total Codes:</b>",
+        "codes_today": "📅 <b>Codes Today:</b>",
+        "codes_week": "📆 <b>Codes This Week:</b>",
+        "codes_month": "📊 <b>Codes This Month:</b>",
+        "users_text": "users",
+        "developer_btn": "🆘 Developer",
+        "verify_btn": "✅ Verify",
+        "select_server_title": "🖥️ <b>Select Server</b>",
+        "select_server_desc": "📌 Each server contains a different set of countries and numbers:",
+        "select_server_hint": "🔻 <i>Select a server to view available countries</i>",
+        "select_platform_title": "📱 <b>Select Platform in {server}</b>",
+        "select_platform_hint": "🔻 <i>Select the platform you want to receive codes for</i>",
+        "no_numbers_here": "❌ <b>No numbers available here</b>",
+        "no_countries_title": "❌ <b>No countries available</b>",
+        "server_label": "🖥️ <b>Server:</b>",
+        "platform_label": "📱 <b>Platform:</b>",
+        "no_countries_hint": "🔻 <i>No countries available for this platform in this server currently</i>",
+        "available_countries_title": "🌍 <b>Available Countries</b>",
+        "select_country_hint": "🔻 <i>Select the country you want to receive codes for</i>",
+        "number_selected_success": "✅ <b>Number selected successfully!</b>",
+        "waiting_for_code": "⏳ 𝓦𝓪𝓲𝓽𝓲𝓷𝓰 𝓯𝓸𝓻 𝓽𝓱𝓮 𝓬𝓸𝓭𝓮... 📱",
+        "code_will_be_sent": "The code will be sent to you directly when it arrives!",
+        "change_number_btn": "🔄 Change Number",
+        "change_country_btn": "🌍 Change Country",
+        "back_to_servers": "𝗕𝗮𝗰𝗸 𝘁𝗼 𝘀𝗲𝗿𝘃𝗲𝗿𝘀",
+        "sticker_duration_error": "❌ Duration must be between 0.1 and 30 seconds!",
+        "sticker_duration_set": "✅ <b>Sticker display duration set!</b>\n\n⏱ New duration: {duration} seconds",
+        "invalid_number": "❌ Please send a valid number!\n\nExample: 0.5 or 1 or 2.5",
+        "error_msg": "❌ Error: {error}",
+        "referral_success": "🎉 <b>You've registered successfully via referral link!</b>\n\nEnjoy using the bot!"
+    }
+}
+
+def get_user_language(user_id):
+    user_data = USERS.get(str(user_id), {})
+    return user_data.get("language", "ar")
+
+def set_user_language(user_id, lang):
+    if str(user_id) not in USERS:
+        USERS[str(user_id)] = {}
+    USERS[str(user_id)]["language"] = lang
+    save_users()
+
+def t(user_id, key):
+    lang = get_user_language(user_id)
+    return TEXTS.get(lang, TEXTS["ar"]).get(key, key)
+
+def save_pickle(path, obj):
+    with open(path, "wb") as f:
+        pickle.dump(obj, f)
+
+def load_pickle(path):
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    return None
+
+def save_cookies():
+    cookies_dict = session1.cookies.get_dict()
+    save_pickle(COOKIES_FILE, cookies_dict)
+
+def load_cookies():
+    d = load_pickle(COOKIES_FILE)
+    if isinstance(d, dict) and d:
+        session1.cookies.update(d)
+        return True
+    return False
+
+def clear_cookies():
+    session1.cookies.clear()
+    if os.path.exists(COOKIES_FILE):
+        try:
+            os.remove(COOKIES_FILE)
+            return True
+        except:
+            return False
+    return True
+
+def save_cookies_site3():
+    cookies_dict = session3.cookies.get_dict()
+    save_pickle(COOKIES_FILE_SITE3, cookies_dict)
+    print("[Site3/Number_Panel] 💾 تم حفظ الجلسة")
+
+def load_cookies_site3():
+    d = load_pickle(COOKIES_FILE_SITE3)
+    if isinstance(d, dict) and d:
+        session3.cookies.update(d)
+        print("[Site3/Number_Panel] 📥 تم تحميل الجلسة المحفوظة")
+        return True
+    print("[Site3/Number_Panel] ⚠️ لا توجد جلسة محفوظة")
+    return False
+
+def save_cookies_site4():
+    cookies_dict = session4.cookies.get_dict()
+    save_pickle(COOKIES_FILE_SITE4, cookies_dict)
+    print("[Site4/Bolt] 💾 تم حفظ الجلسة")
+
+def load_cookies_site4():
+    d = load_pickle(COOKIES_FILE_SITE4)
+    if isinstance(d, dict) and d:
+        session4.cookies.update(d)
+        print("[Site4/Bolt] 📥 تم تحميل الجلسة المحفوظة")
+        return True
+    print("[Site4/Bolt] ⚠️ لا توجد جلسة محفوظة")
+    return False
+
+def get_random_user_agent():
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     ]
-    if not pending:
-        await update.message.reply_text(
-            pe("✅ <b>NO PENDING WITHDRAWALS</b>"),
-            parse_mode="HTML",
-            reply_markup=withdrawal_management_keyboard(),
-        )
-        return
+    return random.choice(user_agents)
 
-    rows = []
-    lines = ["⏳ <b>PENDING WITHDRAWALS</b>\n"]
-    for payment_id, request in pending:
-        uid = request.get("user_id", "N/A")
-        amount = float(request.get("amount", 0))
-        method = html.escape(str(request.get("method", "N/A")))
-        number = html.escape(str(request.get("number", "N/A")))
-        lines.append(
-            f"🆔 <code>{payment_id}</code>\n"
-            f"👤 User: <code>{uid}</code> | 💰 {format_balance(amount)} BDT\n"
-            f"📝 {method} | 📞 <code>{number}</code>\n"
-        )
-        rows.append([
-            InlineKeyboardButton("✅ APPROVE", callback_data=f"admin_approve_{payment_id}", style="primary"),
-            InlineKeyboardButton("❌ REJECT", callback_data=f"admin_reject_{payment_id}", style="primary"),
-        ])
-    rows.append([
-        InlineKeyboardButton("🔙 BACK TO WITHDRAWAL MENU", callback_data="withdraw_admin_back", style="primary")
-    ])
-    await update.message.reply_text(
-        pe("\n".join(lines)),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(rows),
-    )
-
-# ==================== ADMIN PANEL - BALANCE MANAGEMENT ====================
-
-async def admin_add_balance_start(update, context):
-    context.user_data["add_balance_mode"] = True
-    context.user_data["remove_balance_mode"] = False
-    await update.message.reply_text("💰 SEND USER ID TO ADD BALANCE:")
-
-async def admin_remove_balance_start(update, context):
-    context.user_data["remove_balance_mode"] = True
-    context.user_data["add_balance_mode"] = False
-    await update.message.reply_text("💸 SEND USER ID TO REMOVE BALANCE:")
-
-async def process_add_balance_user(update, context):
-    uid_to_add = update.message.text.strip()
-    if not uid_to_add.isdigit():
-        await update.message.reply_text("❌ INVALID USER ID!")
-        return
-    uid_to_add_int = int(uid_to_add)
-    if not user_exists(uid_to_add_int):
-        await update.message.reply_text("❌ USER NOT FOUND!")
-        context.user_data["add_balance_mode"] = False
-        return
-    context.user_data["pending_add_user"] = uid_to_add_int
-    await update.message.reply_text("💵 SEND AMOUNT TO ADD:")
-
-async def process_remove_balance_user(update, context):
-    uid_to_remove = update.message.text.strip()
-    if not uid_to_remove.isdigit():
-        await update.message.reply_text("❌ INVALID USER ID!")
-        return
-    uid_to_remove_int = int(uid_to_remove)
-    if not user_exists(uid_to_remove_int):
-        await update.message.reply_text("❌ USER NOT FOUND!")
-        context.user_data["remove_balance_mode"] = False
-        return
-    context.user_data["pending_remove_user"] = uid_to_remove_int
-    await update.message.reply_text("💸 SEND AMOUNT TO REMOVE:")
-
-async def process_add_balance_amount(update, context):
+def login_attempt_group():
+    
+    global session1, is_logged_in_site1
+    
     try:
-        amount = float(update.message.text.strip())
-        if amount <= 0: raise ValueError
-    except:
-        await update.message.reply_text("❌ INVALID AMOUNT!")
-        return
-    uid = context.user_data.get("pending_add_user")
-    if not uid:
-        context.user_data["add_balance_mode"] = False
-        await update.message.reply_text("⚠️ SESSION EXPIRED.")
-        return
-    old_balance = get_user(uid).get("balance", 0)
-    new_balance = await update_db_balance(uid, amount)
-    await update.message.reply_text(
-        f"✅ **ADD BALANCE SUCCESSFUL**\n🆔 USER: `{uid}`\n"
-        f"💰 ADDED: `{format_balance(amount)} BDT`\n"
-        f"📈 NEW BALANCE: `{format_balance(new_balance)} BDT`",
-        parse_mode="Markdown"
-    )
-    try:
-        await context.bot.send_message(uid, f"🎉 ADMIN ADDED `{format_balance(amount)} BDT` TO YOUR ACCOUNT!\n💵 NEW BALANCE: `{format_balance(new_balance)} BDT`", parse_mode="Markdown")
-    except:
-        pass
-    context.user_data["add_balance_mode"] = False
-    context.user_data["pending_add_user"] = None
+        print(f"[GROUP] 🔄 جلب صفحة تسجيل الدخول...")
+        resp = session1.get(LOGIN_PAGE_URL, timeout=HTTP_TIMEOUT)
+        
+        if resp.status_code != 200:
+            print(f"[GROUP] ⚠️ فشل فتح صفحة الدخول: {resp.status_code}")
+            return False
+        
+        match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
+        if not match:
+            print("[GROUP] ❌ لم يتم العثور على captcha في صفحة تسجيل الدخول")
+            return False
+        
+        num1, num2 = int(match.group(1)), int(match.group(2))
+        captcha_answer = num1 + num2
+        print(f"[GROUP] 🧮 حل captcha: {num1} + {num2} = {captcha_answer}")
+        
+        payload = {
+            "username": USERNAME,
+            "password": PASSWORD,
+            "capt": str(captcha_answer)
+        }
+        
+        headers = {
+            "Content-Type": "application/x-www-fencoded",
+            "Referer": LOGIN_PAGE_URL,
+            "Origin": BASE_URL,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+        
+        print(f"[GROUP] 📤 إرسال طلب تسجيل الدخول لـ: {USERNAME}")
+        
+        resp = session1.post(LOGIN_POST_URL, data=payload, headers=headers, timeout=HTTP_TIMEOUT, allow_redirects=True)
+        
+        print(f"[GROUP] 📊 حالة الاستجابة: {resp.status_code}")
+        
+        if ("dashboard" in resp.text.lower() or 
+            "logout" in resp.text.lower() or 
+            "agent" in resp.url.lower() or
+            "/ints/agent" in resp.url or
+            resp.url != LOGIN_PAGE_URL):
+            print("[GROUP] ✅ تم تسجيل الدخول بنجاح")
+            is_logged_in_site1 = True
+            save_cookies()
+            
+            print("[GROUP] 🔄 زيارة صفحة SMSCDRReports بعد تسجيل الدخول...")
+            try:
+                session1.get(BASE_URL + "/ints/agent/SMSCDRReports", timeout=HTTP_TIMEOUT)
+                print("[GROUP] ✅ تم زيارة صفحة SMSCDRReports بنجاح")
+                time.sleep(1)
+            except Exception as e:
+                print(f"[GROUP] ⚠️ خطأ في زيارة صفحة SMSCDRReports: {e}")
+            
+            return True
+        else:
+            print("[GROUP] ❌ فشل تسجيل الدخول")
+            if "incorrect" in resp.text.lower() or "invalid" in resp.text.lower():
+                print("[GROUP] ⚠️ اسم المستخدم أو كلمة المرور غير صحيحة")
+            return False
+            
+    except requests.exceptions.Timeout:
+        print(f"[GROUP] ⏱️ انتهى وقت الاتصال")
+        return False
+    except requests.exceptions.ConnectionError as e:
+        print(f"[GROUP] 🔌 خطأ في الاتصال: {e}")
+        return False
+    except Exception as e:
+        print(f"[GROUP] ❌ خطأ في تسجيل الدخول: {e}")
+        return False
 
-async def process_remove_balance_amount(update, context):
-    try:
-        amount = float(update.message.text.strip())
-        if amount <= 0: raise ValueError
-    except:
-        await update.message.reply_text("❌ INVALID AMOUNT!")
-        return
-    uid = context.user_data.get("pending_remove_user")
-    if not uid:
-        context.user_data["remove_balance_mode"] = False
-        await update.message.reply_text("⚠️ SESSION EXPIRED.")
-        return
-    old_balance = get_user(uid).get("balance", 0)
-    if amount > old_balance:
-        await update.message.reply_text(f"❌ INSUFFICIENT BALANCE! Current: {format_balance(old_balance)} BDT")
-        context.user_data["remove_balance_mode"] = False
-        context.user_data["pending_remove_user"] = None
-        return
-    new_balance = await update_db_balance(uid, -amount)
-    await update.message.reply_text(
-        f"✅ **REMOVE BALANCE SUCCESSFUL**\n🆔 USER: `{uid}`\n"
-        f"💸 REMOVED: `{format_balance(amount)} BDT`\n"
-        f"📉 NEW BALANCE: `{format_balance(new_balance)} BDT`",
-        parse_mode="Markdown"
-    )
-    try:
-        await context.bot.send_message(uid, f"⚠️ ADMIN REMOVED `{format_balance(amount)} BDT` FROM YOUR ACCOUNT!\n💵 NEW BALANCE: `{format_balance(new_balance)} BDT`", parse_mode="Markdown")
-    except:
-        pass
-    context.user_data["remove_balance_mode"] = False
-    context.user_data["pending_remove_user"] = None
-
-# ==================== ADMIN PANEL - BAN/UNBAN ====================
-
-async def admin_ban_user_start(update, context):
-    context.user_data["admin_ban_mode"] = True
-    context.user_data["admin_unban_mode"] = False
-    await update.message.reply_text("🚫 SEND TELEGRAM ID TO BAN USER:")
-
-async def admin_unban_user_start(update, context):
-    context.user_data["admin_unban_mode"] = True
-    context.user_data["admin_ban_mode"] = False
-    await update.message.reply_text("🔓 SEND TELEGRAM ID TO UNBAN USER:")
-
-async def process_ban_user(update, context):
-    uid_to_ban = update.message.text.strip()
-    if not uid_to_ban.isdigit():
-        await update.message.reply_text("❌ INVALID USER ID!")
-        return
-    uid_to_ban_int = int(uid_to_ban)
-    if not user_exists(uid_to_ban_int):
-        await update.message.reply_text("❌ USER NOT FOUND!")
-        context.user_data["admin_ban_mode"] = False
-        return
-    if is_user_banned(uid_to_ban_int):
-        await update.message.reply_text("⚠️ USER IS ALREADY BANNED!")
-        context.user_data["admin_ban_mode"] = False
-        return
-    ban_user(uid_to_ban_int)
-    try:
-        await context.bot.send_message(uid_to_ban_int, "🚫 **YOU HAVE BEEN BANNED**\n📞 Contact support.", parse_mode="Markdown")
-    except:
-        pass
-    await update.message.reply_text(f"✅ USER `{uid_to_ban}` BANNED!", parse_mode="Markdown", reply_markup=system_config_keyboard())
-    context.user_data["admin_ban_mode"] = False
-
-async def process_unban_user(update, context):
-    uid_to_unban = update.message.text.strip()
-    if not uid_to_unban.isdigit():
-        await update.message.reply_text("❌ INVALID USER ID!")
-        return
-    uid_to_unban_int = int(uid_to_unban)
-    if not is_user_banned(uid_to_unban_int):
-        await update.message.reply_text("⚠️ THIS USER IS NOT BANNED!")
-        context.user_data["admin_unban_mode"] = False
-        return
-    unban_user(uid_to_unban_int)
-    try:
-        await context.bot.send_message(uid_to_unban_int, "✅ **YOU HAVE BEEN UNBANNED!** Use /start", parse_mode="Markdown")
-    except:
-        pass
-    await update.message.reply_text(f"✅ USER `{uid_to_unban}` UNBANNED!", parse_mode="Markdown", reply_markup=system_config_keyboard())
-    context.user_data["admin_unban_mode"] = False
-
-async def show_banned_users_list(update, context):
-    banned_list = load_banned_users()
-    if not banned_list:
-        await update.message.reply_text("📜 NO BANNED USERS.", reply_markup=system_config_keyboard())
-        return
-    text = "📜 **BANNED USER LIST**\n━━━━━━━━━━━━━━━━━━━━\n\n"
-    for i, uid in enumerate(banned_list, 1):
-        text += f"{i}. `{uid}`\n"
-    text += f"\n📊 Total: {len(banned_list)}"
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=system_config_keyboard())
-
-# ==================== MESSAGE HANDLER SECTION ====================
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-    uid = update.effective_user.id
-    text = update.message.text.strip()
-
-    # Admin support reply started from the inline REPLY USER button.
-    if is_admin(uid) and context.user_data.get("support_reply_uid"):
-        target_uid = int(context.user_data["support_reply_uid"])
-        if text == "CANCEL":
-            context.user_data.pop("support_reply_uid", None)
-            await update.message.reply_text(
-                "❌ Support reply cancelled.",
-                reply_markup=admin_main_keyboard(),
-            )
-            return
-
-        context.user_data.pop("support_reply_uid", None)
+def login(max_retries=10):
+    
+    global session1, is_logged_in_site1
+    print(f"🔐 GROUP: بدء تسجيل الدخول...")
+    
+    for attempt in range(1, max_retries + 1):
         try:
-            await context.bot.send_message(
-                chat_id=target_uid,
-                text=pe((
-                    "💬 <b>ADMIN REPLY</b>\n\n"
-                    f"{html.escape(text)}"
-                )),
-                parse_mode="HTML",
-                reply_markup=main_keyboard(target_uid),
-            )
-            await update.message.reply_text(
-                pe(f"✅ Reply sent to user <code>{target_uid}</code>."),
-                parse_mode="HTML",
-                reply_markup=admin_main_keyboard(),
-            )
-        except Exception:
-            await update.message.reply_text(
-                "❌ Could not send the reply. The user may have blocked the bot.",
-                reply_markup=admin_main_keyboard(),
-            )
-        return
+            print(f"\n🔄 GROUP: المحاولة {attempt}/{max_retries}")
+            
+            if attempt > 1:
+                print(f"🔄 GROUP: تجديد الجلسة...")
+                session1 = create_session_group()
+                time.sleep(2)
+            
+            if login_attempt_group():
+                print(f"✅ GROUP: نجح تسجيل الدخول في المحاولة {attempt}")
+                return True
+            
+            backoff_time = min(30, 5 * attempt)
+            print(f"⏳ GROUP: الانتظار {backoff_time}s قبل المحاولة التالية...")
+            time.sleep(backoff_time)
+            
+        except Exception as e:
+            print(f"❌ GROUP (محاولة {attempt}): خطأ - {str(e)}")
+            time.sleep(5)
+    
+    print(f"❌ GROUP: فشل تسجيل الدخول بعد {max_retries} محاولات")
+    return False
 
-    # Admin reply by Telegram's native reply action remains supported.
-    if is_admin(uid) and update.message.reply_to_message:
-        replied_text = update.message.reply_to_message.text or ""
-        match = re.search(r"SUPPORT_USER_ID:(\d+)", replied_text)
-        if match:
-            target_uid = int(match.group(1))
-            try:
-                await context.bot.send_message(
-                    chat_id=target_uid,
-                    text=pe((
-                        "💬 <b>ADMIN REPLY</b>\n\n"
-                        f"{html.escape(text)}"
-                    )),
-                    parse_mode="HTML",
-                    reply_markup=main_keyboard(target_uid),
-                )
-                await update.message.reply_text(
-                    pe(f"✅ Reply sent to user <code>{target_uid}</code>."),
-                    parse_mode="HTML",
-                )
-            except Exception:
-                await update.message.reply_text(
-                    "❌ Could not send the reply. The user may have blocked the bot."
-                )
-            return
+def check_login_valid():
+    try:
+        test_url = BASE_URL + "/ints/agent/res/data_smscdr.php?per-page=10"
+        ajax_headers = {
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Referer": BASE_URL + "/ints/agent/SMSCDRReports"
+        }
+        r = session1.get(test_url, headers=ajax_headers, timeout=15)
+        if r.status_code == 200:
+            if "login" in r.text.lower() or "sign in" in r.text.lower():
+                return False
+            if "direct script access not allowed" in r.text.lower():
+                return False
+            return True
+        return False
+    except Exception as e:
+        return False
 
-    # User support message: send one message to every configured admin.
-    if context.user_data.get("support_mode") and not is_admin(uid):
-        context.user_data["support_mode"] = False
-        user = update.effective_user
-        user_name = html.escape(user.full_name or "Unknown")
-        username = html.escape(f"@{user.username}" if user.username else "No username")
-        support_message = (
-            "📩 <b>NEW SUPPORT MESSAGE</b>\n\n"
-            f"👤 <b>User:</b> {user_name}\n"
-            f"🔗 <b>Username:</b> {username}\n"
-            f"🆔 <b>User ID:</b> <code>{uid}</code>\n"
-            f"🔐 <code>SUPPORT_USER_ID:{uid}</code>\n\n"
-            f"💬 <b>Message:</b>\n{html.escape(text)}"
-        )
-        sent_count = 0
-        admin_ids = get_admin_ids()
-        if not admin_ids:
-            print(f"Support delivery failed: no valid admin IDs configured for user {uid}")
+def test_bolt_type_login(site_key, account):
+    username = account.get("username")
+    password = account.get("password")
+    
+   
+    if site_key == "MSI":
+        session_obj = session6
+        base_url = BASE_URL6
+        login_page = LOGIN_PAGE_URL6
+        login_post = LOGIN_POST_URL6
+        timeout = HTTP_TIMEOUT6
+    elif site_key == "proton SMS":
+        session_obj = session7
+        base_url = BASE_URL7
+        login_page = LOGIN_PAGE_URL7
+        login_post = LOGIN_POST_URL7
+        timeout = HTTP_TIMEOUT7
+    elif site_key == "IMS":
+        session_obj = session8
+        base_url = BASE_URL8
+        login_page = LOGIN_PAGE_URL8
+        login_post = LOGIN_POST_URL8
+        timeout = HTTP_TIMEOUT8
+    elif site_key == "Roxy SMS":
+        try:
+            scraper = cloudscraper.create_scraper()
+            login_url = "http://www.roxysms.net/signin"
+            payload = {"username": username, "password": password}
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "http://www.roxysms.net/Login"
+            }
+            resp = scraper.post(login_url, data=payload, headers=headers, timeout=20)
+            if resp.status_code == 200 and ("success" in resp.text.lower() or "logout" in resp.text.lower()):
+                print(f"[{site_key}] ({username}) ✅ تسجيل الدخول نجح")
+                return True
+            else:
+                print(f"[{site_key}] ({username}) ❌ فشل تسجيل الدخول")
+                return False
+        except Exception as e:
+            print(f"[{site_key}] ({username}) ❌ خطأ في تسجيل الدخول: {e}")
+            return False
+    else:
+        return False
 
-        delivery_errors = []
-        for admin_id in admin_ids:
-            if admin_id == uid:
-                continue
-            try:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=pe(support_message),
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton(
-                            "↩️ REPLY USER",
-                            callback_data=f"support_reply_{uid}",
-                            style="primary",
-                        )
-                    ]]),
-                )
-                sent_count += 1
-            except Exception as exc:
-                error_text = f"{type(exc).__name__}: {exc}"
-                delivery_errors.append(f"{admin_id} -> {error_text}")
-                print(f"Support delivery failed for user {uid} to admin {admin_id}: {error_text}")
-
-        if delivery_errors and not sent_count:
-            print(
-                "Support delivery hint: the admin must open the bot and send "
-                "/start once before the bot can send private messages."
-            )
-
-        if sent_count:
-            await update.message.reply_text(
-                f"✅ আপনার message {sent_count} জন admin-এর কাছে পাঠানো হয়েছে।\n"
-                "Admin reply করলে আপনি এই bot-এ উত্তর পাবেন।",
-                reply_markup=main_keyboard(uid),
-            )
-        else:
-            await update.message.reply_text(
-                "❌ এখন কোনো admin-এর কাছে message পৌঁছানো যায়নি।\n\n"
-                "Admin-কে আগে এই bot খুলে /start দিতে হবে। "
-                "তারপর Support থেকে আবার message পাঠান।",
-                reply_markup=main_keyboard(uid),
-            )
-        return
-
-    # Withdraw flow
-    if context.user_data.get("withdraw_mode") == "select_method":
-        await withdraw_method_selected(update, context)
-        return
-    if context.user_data.get("withdraw_mode") == "amount":
-        await withdraw_amount_received(update, context)
-        return
-    if context.user_data.get("withdraw_mode") == "number":
-        await withdraw_number_received(update, context)
-        return
-
-    # Admin balance
-    if context.user_data.get("add_balance_mode") and is_admin(uid):
-        if context.user_data.get("pending_add_user"):
-            await process_add_balance_amount(update, context)
-        else:
-            await process_add_balance_user(update, context)
-        return
-    if context.user_data.get("remove_balance_mode") and is_admin(uid):
-        if context.user_data.get("pending_remove_user"):
-            await process_remove_balance_amount(update, context)
-        else:
-            await process_remove_balance_user(update, context)
-        return
-
-    # Admin ban/unban
-    if context.user_data.get("admin_ban_mode") and is_admin(uid):
-        await process_ban_user(update, context)
-        return
-    if context.user_data.get("admin_unban_mode") and is_admin(uid):
-        await process_unban_user(update, context)
-        return
-
-    # CUSTOM RANGE — user sent a range text
-    if context.user_data.get("mode") == "custom_range":
-        context.user_data["mode"] = None
-        range_text = text.strip().upper()
-        if not re.search(r'\d', range_text):
-            await update.message.reply_text(
-                pe("❌ <b>INVALID RANGE!</b>\n\n"
-                "<blockquote>সঠিক উদাহরণ: <code>234XXX</code></blockquote>"),
-                parse_mode="HTML",
-                reply_markup=main_keyboard(uid)
-            )
-            return
-        await request_queue.put({
-            'type': 'process_numbers',
-            'update': update,
-            'context': context,
-            'range_text': range_text,
-            'count': 1
+    print(f"[{site_key}] ({username}) 🔐 محاولة تسجيل الدخول (Bolt-type)...")
+    
+    try:
+        session_obj.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
         })
-        return
-
-    # Ban check
-    if not is_admin(uid) and is_user_banned(uid):
-        await update.message.reply_text("🚫 YOU ARE BANNED 🚫", reply_markup=main_keyboard(uid))
-        return
-
-    # Cancel
-    if text == "CANCEL":
-        context.user_data.clear()
-        await update.message.reply_text("❌ CANCELLED", reply_markup=main_keyboard(uid))
-        return
-
-    # Main menu buttons
-    if text == "PROFILE":
-        # Clear any lingering mode so sub-buttons work cleanly
-        context.user_data["mode"] = None
-        context.user_data["account_menu"] = True
-        await update.message.reply_text(
-            pe("👤 <b>PROFILE MENU</b>\n\nSELECT AN OPTION:"),
-            parse_mode="HTML",
-            reply_markup=account_keyboard()
-        )
-        return
-
-    if text == "BACK TO MAIN" and context.user_data.get("account_menu"):
-        context.user_data["account_menu"] = None
-        context.user_data["mode"] = None
-        await update.message.reply_text(
-            "🔙 Back to main menu.",
-            reply_markup=main_keyboard(uid)
-        )
-        return
-
-    if text == "VIEW PROFILE" and context.user_data.get("account_menu"):
-        user_data = get_user(uid)
-        stats = get_user_stats(uid)
-        user = update.effective_user
-        full_name = html.escape(user.full_name)
-        username = html.escape(user.username or "No username")
-        profile_text = (
-            f"👤 <b>YOUR PROFILE</b>\n\n"
-            f"<blockquote>🏷️ NAME: <b>{full_name}</b></blockquote>\n"
-            f"<blockquote>🆔 USERNAME: @{username}</blockquote>\n"
-            f"<blockquote>🗝️ TELEGRAM ID: <code>{uid}</code></blockquote>\n\n"
-            f"<blockquote>💵 BALANCE: <b>{format_balance(user_data.get('balance', 0))} BDT</b></blockquote>\n\n"
-            f"✨ <b>TODAY</b>\n"
-            f"<blockquote>📱 NUMBERS: {stats['today_numbers']}\n🔑 OTPS: {stats['today_otps']}</blockquote>\n\n"
-            f"🔥 <b>LAST 7 DAYS</b>\n"
-            f"<blockquote>📱 NUMBERS: {stats['last7d_numbers']}\n🔑 OTPS: {stats['last7d_otps']}</blockquote>\n\n"
-            f"🌐 <b>ALL TIME</b>\n"
-            f"<blockquote>📱 NUMBERS: {stats['total_numbers']}\n🔑 OTPS: {stats['total_otps']}</blockquote>"
-        )
-        await update.message.reply_text(pe(profile_text), parse_mode="HTML",
-                                         reply_markup=account_keyboard())
-        return
-
-    if text == "BALANCE" and context.user_data.get("account_menu"):
-        balance = get_user(uid)['balance']
-        await update.message.reply_text(
-            pe(f"💰 <b>YOUR CURRENT BALANCE</b>\n\n"
-            f"<blockquote>💵 TOTAL: <b>{format_balance(balance)} BDT</b></blockquote>"),
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("💸 WITHDRAW", callback_data="withdraw_start", style="primary")
-            ]])
-        )
-        return
-
-    if text == "REFER AND EARN" and context.user_data.get("account_menu"):
-        await refer_command(update, context)
-        return
-
-    # SEARCH OTP
-    if text == "SEARCH OTP":
-        context.user_data["mode"] = "search_otp"
-        await update.message.reply_text("🔍 **ENTER THE NUMBER TO SEARCH OTP:**", parse_mode="Markdown")
-        return
-
-    if context.user_data.get("mode") == "search_otp":
-        context.user_data["mode"] = None
-        await request_queue.put({'type': 'search_otp', 'update': update, 'context': context, 'target_num': normalize_number(text)})
-        return
-
-    # GET 2FA
-    if text == "GET 2FA":
-        await get_2fa_code(update, context)
-        return
-
-    # GET NUMBER
-    if text == "GET NUMBER":
-        await show_app_selection(update, context)
-        return
-
-    if context.user_data.get("mode") == "get_2fa":
-        await process_2fa_key(update, context)
-        return
-
-    # LEADERBOARD
-    if text == "LEADERBOARD":
-        await leaderboard_command(update, context)
-        return
-
-    # SUPPORT BUTTON HANDLER
-    if text == "SUPPORT":
-        if is_admin(uid):
-            await update.message.reply_text(
-                pe("💬 <b>SUPPORT CHAT</b>\n\n"
-                "User-এর message-এর উপর সরাসরি Reply করলে উত্তরটি সেই user-এর কাছে যাবে।"),
-                parse_mode="HTML",
-                reply_markup=main_keyboard(uid),
-            )
-            return
-        context.user_data["support_mode"] = True
-        await update.message.reply_text(
-            pe("💬 <b>SUPPORT CHAT</b>\n\n"
-            "আপনার সমস্যা বা message লিখে পাঠান। "
-            "আমি সেটি admin-এর কাছে পাঠিয়ে দেব।"),
-            parse_mode="HTML",
-            reply_markup=cancel_keyboard(),
-        )
-        return
-
-    # Admin panel
-    if text == "ADMIN PANEL" and is_admin(uid):
-        context.user_data["admin_mode"] = "main"
-        await update.message.reply_text(
-            "⌬━━━━━━━━━━━━━━━━━━━━⌬\n   WELCOME ADMIN PANEL\n⌬━━━━━━━━━━━━━━━━━━━━⌬",
-            reply_markup=admin_main_keyboard()
-        )
-        return
-
-    if text == "BACK TO MAIN" and context.user_data.get("admin_mode"):
-        context.user_data["admin_mode"] = None
-        await update.message.reply_text("🔙 Back to main menu.", reply_markup=main_keyboard(uid))
-        return
-
-    if text == "BACK TO ADMIN":
-        context.user_data["user_management_mode"] = None
-        context.user_data["system_config_mode"] = None
-        context.user_data["bot_settings_mode"] = None
-        context.user_data["zenex_config_mode"] = None
-        context.user_data["service_mgmt_mode"] = None
-        context.user_data["withdrawal_admin_mode"] = None
-        context.user_data["admin_mode"] = "main"
-        await update.message.reply_text("🔙 Back to admin panel.", reply_markup=admin_main_keyboard())
-        return
-
-    if text == "SUPPORT CHAT" and context.user_data.get("admin_mode") == "main" and is_admin(uid):
-        await update.message.reply_text(
-            pe("💬 <b>SUPPORT CHAT</b>\n\n"
-            "User-এর message-এর উপর সরাসরি Reply করুন। "
-            "আপনার reply automatically সেই user-এর কাছে চলে যাবে।"),
-            parse_mode="HTML",
-            reply_markup=admin_main_keyboard(),
-        )
-        return
-
-    if text == "WITHDRAWAL MANAGEMENT" and context.user_data.get("admin_mode") == "main" and is_admin(uid):
-        context.user_data["withdrawal_admin_mode"] = "main"
-        await update.message.reply_text(
-            pe("💸 <b>WITHDRAWAL MANAGEMENT</b>\n\n"
-            f"📉 Current minimum: <code>{get_min_withdraw():.2f} BDT</code>"),
-            parse_mode="HTML",
-            reply_markup=withdrawal_management_keyboard(),
-        )
-        return
-
-    # Direct PENDING WITHDRAWALS from admin_main_keyboard (no sub-mode required)
-    if text == "⏳ PENDING WITHDRAWALS" and is_admin(uid):
-        await show_pending_withdrawals(update, context)
-        return
-
-    if text == "PENDING WITHDRAWALS" and context.user_data.get("withdrawal_admin_mode") == "main" and is_admin(uid):
-        await show_pending_withdrawals(update, context)
-        return
-
-    if text == "SET MINIMUM WITHDRAW" and context.user_data.get("withdrawal_admin_mode") == "main" and is_admin(uid):
-        context.user_data["withdrawal_admin_mode"] = "set_minimum"
-        await update.message.reply_text(
-            pe(f"📉 <b>SET MINIMUM WITHDRAW</b>\n\n"
-            f"Current amount: <code>{get_min_withdraw():.2f} BDT</code>\n\n"
-            "নতুন minimum amount BDT-তে লিখে পাঠান:"),
-            parse_mode="HTML",
-            reply_markup=cancel_keyboard(),
-        )
-        return
-
-    if context.user_data.get("withdrawal_admin_mode") == "set_minimum" and is_admin(uid):
-        try:
-            new_minimum = float(text)
-        except ValueError:
-            await update.message.reply_text(
-                "❌ সঠিক amount দিন, যেমন: 50 বা 100",
-                reply_markup=cancel_keyboard(),
-            )
-            return
-        if new_minimum <= 0 or new_minimum > MAX_WITHDRAW:
-            await update.message.reply_text(
-                f"❌ Amount 0-এর বেশি এবং {MAX_WITHDRAW} BDT-এর মধ্যে হতে হবে।",
-                reply_markup=cancel_keyboard(),
-            )
-            return
-        settings = load_settings()
-        settings["min_withdraw"] = new_minimum
-        save_settings(settings)
-        context.user_data["withdrawal_admin_mode"] = "main"
-        await update.message.reply_text(
-            pe(f"✅ <b>MINIMUM WITHDRAW UPDATED</b>\n"
-            f"New minimum: <code>{new_minimum:.2f} BDT</code>"),
-            parse_mode="HTML",
-            reply_markup=withdrawal_management_keyboard(),
-        )
-        return
-
-    if text == "USER MANAGEMENT" and context.user_data.get("admin_mode") == "main" and is_admin(uid):
-        context.user_data["user_management_mode"] = "main"
-        await update.message.reply_text("👥 User Management:", reply_markup=user_management_keyboard())
-        return
-
-    if text == "SYSTEM CONFIGURATION" and context.user_data.get("admin_mode") == "main" and is_admin(uid):
-        context.user_data["system_config_mode"] = "main"
-        await update.message.reply_text("⚙️ System Configuration:", reply_markup=system_config_keyboard())
-        return
-
-    if text == "TODAY ALL STATUS" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
-        t_n, t_o, s_n, s_o, tot_n, tot_o = get_global_system_stats()
-        msg = (
-            f"📊 <b>SYSTEM STATUS</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"✨ <b>TODAY</b>\n📱 NUMBERS: {t_n}\n🔑 OTPS: {t_o}\n\n"
-            f"🔥 <b>LAST 7 DAYS</b>\n📱 NUMBERS: {s_n}\n🔑 OTPS: {s_o}\n\n"
-            f"🌐 <b>ALL TIME</b>\n📱 NUMBERS: {tot_n}\n🔑 OTPS: {tot_o}"
-        )
-        await update.message.reply_text(pe(msg), parse_mode="HTML")
-        return
-
-    if text == "USER STATUS CHECK" and is_admin(uid):
-        context.user_data["mode"] = "input_user_id"
-        await update.message.reply_text("🔍 ENTER TELEGRAM ID:", reply_markup=cancel_keyboard())
-        return
-
-    if context.user_data.get("mode") == "input_user_id" and is_admin(uid):
-        target_uid = text.strip()
-        if not target_uid.isdigit():
-            await update.message.reply_text("❌ INVALID ID!")
-            return
-        context.user_data["mode"] = None
-        stats = get_user_stats(target_uid)
-        msg = (
-            f"👤 <b>USER STATUS</b> — <code>{target_uid}</code>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"✨ TODAY: 📱 {stats['today_numbers']} | 🔑 {stats['today_otps']}\n"
-            f"🔥 7 DAYS: 📱 {stats['last7d_numbers']} | 🔑 {stats['last7d_otps']}\n"
-            f"🌐 ALL TIME: 📱 {stats['total_numbers']} | 🔑 {stats['total_otps']}"
-        )
-        await update.message.reply_text(
-            pe(msg), parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📂 CHECK ALL DATA", callback_data=f"full_logs_{target_uid}", style="primary")
-            ]])
-        )
-        return
-
-    if text == "ALL USER ID" and context.user_data.get("user_management_mode") == "main" and is_admin(uid):
-        users = get_all_users()
-        if users:
-            content = "\n".join(f"{i}. {u}" for i, u in enumerate(users, 1))
-            f = io.BytesIO(content.encode()); f.name = f"ALL_USERS_{len(users)}.txt"
-            await update.message.reply_document(document=f, caption=f"👥 Total Users: {len(users)}", reply_markup=user_management_keyboard())
-        else:
-            await update.message.reply_text("No users found.", reply_markup=user_management_keyboard())
-        return
-
-    if text == "ALL USER BALANCE" and context.user_data.get("user_management_mode") == "main" and is_admin(uid):
-        user_db = load_data(USER_DATA_FILE)
-        if user_db:
-            total_bal = sum(v.get("balance", 0) for v in user_db.values())
-            lines = [f"{i}. {uid_}: {v.get('balance', 0):.2f} BDT" for i, (uid_, v) in enumerate(user_db.items(), 1)]
-            content = f"💰 TOTAL BALANCE: {total_bal:.2f} BDT\n\n" + "\n".join(lines)
-            f = io.BytesIO(content.encode()); f.name = f"BALANCES_{total_bal:.0f}.txt"
-            await update.message.reply_document(document=f, caption=f"💵 Total Balance: {total_bal:.2f} BDT", reply_markup=user_management_keyboard())
-        else:
-            await update.message.reply_text("No data.", reply_markup=user_management_keyboard())
-        return
-
-    if text == "BAN USER LIST" and is_admin(uid):
-        await show_banned_users_list(update, context)
-        return
-
-    if text == "BAN USER" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
-        await admin_ban_user_start(update, context)
-        return
-
-    if text == "UNBAN USER" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
-        await admin_unban_user_start(update, context)
-        return
-
-    if text == "ADD BALANCE" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
-        await admin_add_balance_start(update, context)
-        return
-
-    if text == "REMOVE BALANCE" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
-        await admin_remove_balance_start(update, context)
-        return
-
-    # ==================== FIXED BROADCAST (TEXT, PHOTO, VIDEO, FILE, ETC.) ====================
-    if text == "SEND MESSAGE TO ALL USERS" and is_admin(uid):
-        context.user_data["broadcast_mode"] = True
-        await update.message.reply_text(
-            pe("📢 <b>ADMIN BROADCAST SYSTEM (PRO)</b>\n\n"
-            "💬 আপনি এখন যা পাঠাবেন (Text, Photo, Video, Document, Voice, Audio, Animation, Sticker) – সকল ইউজারের কাছে প্রফেশনাল হেডারসহ চলে যাবে।\n\n"
-            "✨ রেঞ্জ (যেমন: 237XXX) থাকলে তা অটোমেটিক ক্লিক-টু-কপি হয়ে যাবে।"), 
-            parse_mode="HTML", 
-            reply_markup=cancel_keyboard()
-        )
-        return
-
-    if context.user_data.get("broadcast_mode") and is_admin(uid):
-        context.user_data["broadcast_mode"] = False
         
-        user_db = load_data(USER_DATA_FILE)
-        all_uids = list(user_db.keys())
+        resp = session_obj.get(login_page, timeout=timeout)
         
-        if not all_uids:
-            await update.message.reply_text("❌ পাঠানোর জন্য কোনো ইউজার পাওয়া যায়নি!")
+        match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
+        if not match:
+            print(f"[{site_key}] ({username}) ⚠️ لم يتم العثور على captcha")
+            return False
+        
+        num1, num2 = int(match.group(1)), int(match.group(2))
+        captcha_answer = num1 + num2
+        
+        crlf_match = re.search(r"name=['\"]crlf['\"].*?value=['\"]([^'\"]+)['\"]", resp.text)
+        
+        payload = {
+            "username": username,
+            "password": password,
+            "capt": str(captcha_answer)
+        }
+        
+        if crlf_match:
+            payload["crlf"] = crlf_match.group(1)
+        
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": login_page,
+            "Origin": base_url
+        }
+        
+        resp = session_obj.post(login_post, data=payload, headers=headers, timeout=timeout, allow_redirects=True)
+        
+        if ("dashboard" in resp.text.lower() or 
+            "logout" in resp.text.lower() or 
+            "agent" in resp.url.lower() or 
+            "reports" in resp.url.lower()):
+            print(f"[{site_key}] ({username}) ✅ تسجيل الدخول نجح")
+            return True
+        else:
+            print(f"[{site_key}] ({username}) ❌ فشل تسجيل الدخول")
+            return False
+            
+    except Exception as e:
+        print(f"[{site_key}] ({username}) ❌ خطأ في تسجيل الدخول: {e}")
+        return False
+
+def extract_sms(html_text, debug_mode=False):
+    try:
+        test_session = requests.Session()
+        test_session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
+        })
+        
+        resp = test_session.get(login_page_url, timeout=timeout)
+        print(f"[{site_key}] 📄 حالة GET: {resp.status_code}")
+        
+        match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
+        if not match:
+            print(f"[{site_key}] ⚠️ لم يتم العثور على captcha في الصفحة")
+            return False
+        
+        num1, num2 = int(match.group(1)), int(match.group(2))
+        captcha_answer = num1 + num2
+        print(f"[{site_key}] 🧮 حل captcha: {num1} + {num2} = {captcha_answer}")
+        
+        crlf_match = re.search(r"name='crlf' value='([^']+)'", resp.text)
+        
+        payload = {
+            "username": username,
+            "password": password,
+            "capt": str(captcha_answer)
+        }
+        
+        if crlf_match:
+            payload["crlf"] = crlf_match.group(1)
+            print(f"[{site_key}] 🔑 استخراج crlf token")
+        
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": login_page_url,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Origin": base_url
+        }
+        
+        print(f"[{site_key}] 📤 إرسال طلب تسجيل الدخول لـ: {username}")
+        resp = test_session.post(login_post_url, data=payload, headers=headers, timeout=timeout, allow_redirects=True)
+        
+        print(f"[{site_key}] 📊 حالة POST: {resp.status_code}")
+        print(f"[{site_key}] 🔗 URL النهائي: {resp.url}")
+        
+        if ("dashboard" in resp.text.lower() or 
+            "logout" in resp.text.lower() or 
+            "agent" in resp.url.lower() or 
+            "reports" in resp.url.lower() or
+            resp.url != login_page_url):
+            print(f"[{site_key}] ✅ تسجيل الدخول نجح")
+            return True
+        else:
+            print(f"[{site_key}] ❌ فشل تسجيل الدخول")
+            return False
+            
+    except Exception as e:
+        print(f"[{site_key}] ❌ خطأ في تسجيل الدخول: {e}")
+        return False
+
+def test_site_login(chat_id, site_key, account_id=None):
+    global is_logged_in_site2, is_logged_in_site3, is_logged_in_site4, is_logged_in_site5, USERNAME, PASSWORD, USERNAME2, PASSWORD2, USERNAME3, PASSWORD3, USERNAME4, PASSWORD4, USERNAME5, PASSWORD5
+    
+    site_name = SETTINGS[site_key]["name"]
+    account = get_account_by_id(site_key, account_id) if account_id else get_site_accounts(site_key)[0]
+    
+    if not account:
+        bot.send_message(chat_id, "❌ الحساب غير موجود!", parse_mode="HTML")
+        return
+    
+    try:
+        if site_key == "IMS":
+            success, _ = login_site8(account)
+            if success:
+                bot.send_message(
+                    chat_id,
+                    f"✅ <b>نجح تسجيل الدخول - {site_name}</b>\n\n"
+                    f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                    f"🔓 تم تسجيل الدخول بنجاح\n"
+                    f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    parse_mode="HTML"
+                )
+            else:
+                bot.send_message(
+                    chat_id,
+                    f"❌ <b>فشل تسجيل الدخول - {site_name}</b>\n\n"
+                    f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                    f"⚠️ تأكد من صحة البيانات (Username, Password, Captcha)",
+                    parse_mode="HTML"
+                )
             return
 
-        success_ids, fail_ids = [], []
-        status_msg = await update.message.reply_text(pe(f"🚀 <b>ব্রডকাস্ট শুরু হয়েছে...</b>\n🎯 টার্গেট: {len(all_uids)} জন ইউজার।"), parse_mode="HTML")
-
-        def format_broadcast_caption(caption_text):
-            if not caption_text:
-                return "<blockquote>📢 <b>ADMIN NOTICE :</b></blockquote>"
-            formatted = re.sub(r'(\d{3,}[xX]{3,})', r'<code>\1</code>', str(caption_text))
-            return f"<blockquote>📢 <b>ADMIN NOTICE :</b></blockquote>\n\n{formatted}"
-
-        for user_id_str in all_uids:
+        if site_key == "GROUP":
+            old_username, old_password = USERNAME, PASSWORD
             try:
-                target_id = int(user_id_str)
+                USERNAME = account.get("username")
+                PASSWORD = account.get("password")
                 
-                # টেক্সট মেসেজ
-                if update.message.text:
-                    await context.bot.send_message(
-                        chat_id=target_id, 
-                        text=pe(format_broadcast_caption(update.message.text)), 
+                result = login()
+                
+                if result:
+                    SESSIONS[site_key] = {"logged_in": True, "time": datetime.now().isoformat()}
+                    save_sessions(SESSIONS)
+                    bot.send_message(
+                        chat_id,
+                        f"✅ <b>نجح تسجيل الدخول - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"🔓 تم تسجيل الدخول بنجاح\n"
+                        f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                         parse_mode="HTML"
                     )
-                # ফটো
-                elif update.message.photo:
-                    caption = format_broadcast_caption(update.message.caption) if update.message.caption else None
-                    await context.bot.send_photo(
-                        chat_id=target_id,
-                        photo=update.message.photo[-1].file_id,
-                        caption=caption,
-                        parse_mode="HTML" if caption else None
-                    )
-                # ভিডিও
-                elif update.message.video:
-                    caption = format_broadcast_caption(update.message.caption) if update.message.caption else None
-                    await context.bot.send_video(
-                        chat_id=target_id,
-                        video=update.message.video.file_id,
-                        caption=caption,
-                        parse_mode="HTML" if caption else None
-                    )
-                # ডকুমেন্ট (যেকোনো ফাইল)
-                elif update.message.document:
-                    caption = format_broadcast_caption(update.message.caption) if update.message.caption else None
-                    await context.bot.send_document(
-                        chat_id=target_id,
-                        document=update.message.document.file_id,
-                        caption=pe(caption),
-                        parse_mode="HTML" if caption else None
-                    )
-                # অডিও
-                elif update.message.audio:
-                    caption = format_broadcast_caption(update.message.caption) if update.message.caption else None
-                    await context.bot.send_audio(
-                        chat_id=target_id,
-                        audio=update.message.audio.file_id,
-                        caption=caption,
-                        parse_mode="HTML" if caption else None
-                    )
-                # ভয়েস
-                elif update.message.voice:
-                    caption = format_broadcast_caption(update.message.caption) if update.message.caption else None
-                    await context.bot.send_voice(
-                        chat_id=target_id,
-                        voice=update.message.voice.file_id,
-                        caption=caption,
-                        parse_mode="HTML" if caption else None
-                    )
-                # অ্যানিমেশন (GIF)
-                elif update.message.animation:
-                    caption = format_broadcast_caption(update.message.caption) if update.message.caption else None
-                    await context.bot.send_animation(
-                        chat_id=target_id,
-                        animation=update.message.animation.file_id,
-                        caption=caption,
-                        parse_mode="HTML" if caption else None
-                    )
-                # স্টিকার
-                elif update.message.sticker:
-                    await context.bot.send_sticker(
-                        chat_id=target_id,
-                        sticker=update.message.sticker.file_id
-                    )
-                # অন্য সব কিছু (ফরোয়ার্ড/কপি)
                 else:
-                    try:
-                        await context.bot.copy_message(
-                            chat_id=target_id,
-                            from_chat_id=update.message.chat_id,
-                            message_id=update.message.message_id
-                        )
-                    except:
-                        await context.bot.send_message(
-                            chat_id=target_id,
-                            text=pe("📢 <b>ADMIN NOTICE :</b>\n\nআপনার জন্য একটি নতুন বার্তা আছে, কিন্তু এটি প্রদর্শন করা সম্ভব হয়নি।"),
+                    bot.send_message(
+                        chat_id,
+                        f"❌ <b>فشل تسجيل الدخول - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"⚠️ تحقق من اليوزر والباسورد",
+                        parse_mode="HTML"
+                    )
+            finally:
+                USERNAME, PASSWORD = old_username, old_password
+        
+        elif site_key == "Roxy SMS":
+            try:
+                scraper = cloudscraper.create_scraper()
+                login_url = "http://www.roxysms.net/signin"
+                payload = {"username": account["username"], "password": account["password"]}
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "http://www.roxysms.net/Login"
+                }
+                resp = scraper.post(login_url, data=payload, headers=headers, timeout=20)
+                if resp.status_code == 200 and ("success" in resp.text.lower() or "logout" in resp.text.lower()):
+                    SESSIONS[site_key] = {"logged_in": True, "time": datetime.now().isoformat()}
+                    save_sessions(SESSIONS)
+                    bot.send_message(
+                        chat_id,
+                        f"✅ <b>نجح تسجيل الدخول - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"🔓 تم تسجيل الدخول بنجاح\n"
+                        f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        parse_mode="HTML"
+                    )
+                else:
+                    bot.send_message(
+                        chat_id,
+                        f"❌ <b>فشل تسجيل الدخول - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"⚠️ تحقق من اليوزر والباسورد",
+                        parse_mode="HTML"
+                    )
+            except Exception as e:
+                bot.send_message(chat_id, f"❌ خطأ في تسجيل الدخول: {e}")
+            return
+        
+        elif site_key == "Fly sms":
+            old_username, old_password = USERNAME2, PASSWORD2
+            try:
+                USERNAME2 = account.get("username")
+                PASSWORD2 = account.get("password")
+                
+                is_logged_in_site2 = False
+                result = login_site2()
+                
+                if result:
+                    SESSIONS[site_key] = {"logged_in": True, "time": datetime.now().isoformat()}
+                    save_sessions(SESSIONS)
+                    bot.send_message(
+                        chat_id,
+                        f"✅ <b>نجح تسجيل الدخول - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"🔓 تم تسجيل الدخول بنجاح\n"
+                        f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        parse_mode="HTML"
+                    )
+                else:
+                    bot.send_message(
+                        chat_id,
+                        f"❌ <b>فشل تسجيل الدخول - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"⚠️ تحقق من اليوزر والباسورد",
+                        parse_mode="HTML"
+                    )
+            finally:
+                USERNAME2, PASSWORD2 = old_username, old_password
+        
+        elif site_key == "Number_Panel":
+            old_username, old_password = USERNAME3, PASSWORD3
+            try:
+                USERNAME3 = account.get("username")
+                PASSWORD3 = account.get("password")
+                
+                is_logged_in_site3 = False
+                result = login_site3()
+                
+                if result:
+                    SESSIONS[site_key] = {"logged_in": True, "time": datetime.now().isoformat()}
+                    save_sessions(SESSIONS)
+                    bot.send_message(
+                        chat_id,
+                        f"✅ <b>نجح تسجيل الدخول - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"🔓 تم تسجيل الدخول بنجاح\n"
+                        f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        parse_mode="HTML"
+                    )
+                else:
+                    bot.send_message(
+                        chat_id,
+                        f"❌ <b>فشل تسجيل الدخول - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"⚠️ تحقق من اليوزر والباسورد",
+                        parse_mode="HTML"
+                    )
+            finally:
+                USERNAME3, PASSWORD3 = old_username, old_password
+        
+        elif site_key == "Bolt":
+            old_username, old_password = USERNAME4, PASSWORD4
+            try:
+                USERNAME4 = account.get("username")
+                PASSWORD4 = account.get("password")
+                
+                is_logged_in_site4 = False
+                result = login_site4()
+                
+                if result:
+                    SESSIONS[site_key] = {"logged_in": True, "time": datetime.now().isoformat()}
+                    save_sessions(SESSIONS)
+                    bot.send_message(
+                        chat_id,
+                        f"✅ <b>نجح تسجيل الدخول - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"🔓 تم تسجيل الدخول بنجاح\n"
+                        f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        parse_mode="HTML"
+                    )
+                else:
+                    bot.send_message(
+                        chat_id,
+                        f"❌ <b>فشل تسجيل الدخول - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"⚠️ تحقق من اليوزر والباسورد",
+                        parse_mode="HTML"
+                    )
+            finally:
+                USERNAME4, PASSWORD4 = old_username, old_password
+        
+        elif site_key == "iVASMS":
+            old_username, old_password = USERNAME5, PASSWORD5
+            try:
+                USERNAME5 = account.get("username")
+                PASSWORD5 = account.get("password")
+                
+                is_logged_in_site5 = False
+                result = login_site5()
+                
+                if result:
+                    SESSIONS[site_key] = {"logged_in": True, "time": datetime.now().isoformat()}
+                    save_sessions(SESSIONS)
+                    bot.send_message(
+                        chat_id,
+                        f"✅ <b>نجح تسجيل الدخول - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"🔓 تم تسجيل الدخول بنجاح\n"
+                        f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        parse_mode="HTML"
+                    )
+                else:
+                    bot.send_message(
+                        chat_id,
+                        f"❌ <b>فشل تسجيل الدخول - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"⚠️ تحقق من اليوزر والباسورد",
+                        parse_mode="HTML"
+                    )
+            finally:
+                USERNAME5, PASSWORD5 = old_username, old_password
+        
+        elif site_key in ["MSI", "proton SMS", "IMS", "Roxy SMS"]:
+            result = test_bolt_type_login(site_key, account)
+            if result:
+                SESSIONS[site_key] = {"logged_in": True, "time": datetime.now().isoformat()}
+                save_sessions(SESSIONS)
+                bot.send_message(
+                    chat_id,
+                    f"✅ <b>نجح تسجيل الدخول - {site_name}</b>\n\n"
+                    f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                    f"🔓 تم تسجيل الدخول بنجاح\n"
+                    f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    parse_mode="HTML"
+                )
+            else:
+                bot.send_message(
+                    chat_id,
+                    f"❌ <b>فشل تسجيل الدخول - {site_name}</b>\n\n"
+                    f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                    f"⚠️ تحقق من اليوزر والباسورد",
+                    parse_mode="HTML"
+                )
+    
+    except Exception as e:
+        bot.send_message(
+            chat_id,
+            f"❌ <b>خطأ أثناء اختبار تسجيل الدخول - {site_name}</b>\n\n"
+            f"⚠️ الخطأ: {str(e)}",
+            parse_mode="HTML"
+        )
+
+def test_site_fetch(chat_id, site_key, account_id=None):
+    global is_logged_in_site2, is_logged_in_site3, is_logged_in_site4, is_logged_in_site5, USERNAME, PASSWORD, USERNAME2, PASSWORD2, USERNAME3, PASSWORD3, USERNAME4, PASSWORD4, USERNAME5, PASSWORD5
+    site_name = SETTINGS[site_key]["name"]
+    account = get_account_by_id(site_key, account_id) if account_id else get_site_accounts(site_key)[0]
+    
+    if not account:
+        bot.send_message(chat_id, "❌ الحساب غير موجود!", parse_mode="HTML")
+        return
+    
+    try:
+        if site_key == "GROUP":
+            old_username, old_password = USERNAME, PASSWORD
+            try:
+                USERNAME = account.get("username")
+                PASSWORD = account.get("password")
+                
+                if not check_login_valid():
+                    print(f"[GROUP] الجلسة غير صالحة لـ {account.get('username')}، محاولة تسجيل الدخول...")
+                    if not login():
+                        bot.send_message(
+                            chat_id,
+                            f"❌ <b>فشل تسجيل الدخول - {site_name}</b>\n\n"
+                            f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                            f"⚠️ يجب تسجيل الدخول أولاً قبل اختبار جلب الكود",
                             parse_mode="HTML"
                         )
-                success_ids.append(user_id_str)
-            except Exception as e:
-                print(f"Broadcast fail to {user_id_str}: {e}")
-                fail_ids.append(user_id_str)
+                        return
+                    time.sleep(2)
             
-            await asyncio.sleep(0.05)
-
-        report_text = (
-            f"✅ <b>ADMIN NOTICE COMPLETE !</b>\n\n"
-            f"📊 <b>BROADCAST REPORT:</b>\n\n"
-            f"<blockquote>✅ SUCCESSFULLY SENT: {len(success_ids)} USERS !</blockquote>\n"
-            f"<blockquote>❌ FAILED TO SEND: {len(fail_ids)} USERS !</blockquote>"
-        )
+                sms_url = BASE_URL + AJAX_PATH
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": BASE_URL + "/ints/agent/SMSCDRReports"
+                }
+                
+                r = session1.get(sms_url, headers=headers, timeout=HTTP_TIMEOUT)
+                
+                if r.status_code == 200:
+                    messages = extract_sms(r.text)
+                    if messages:
+                        last_msg = messages[0]
+                        otp, decoded_text = extract_from_message(last_msg.get('raw', ''))
+                        
+                        bot.send_message(
+                            chat_id,
+                            f"✅ <b>نجح جلب الكود - {site_name}</b>\n\n"
+                            f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                            f"📱 الرقم: <code>{last_msg.get('source', 'N/A')}</code>\n"
+                            f"📝 الرسالة: {decoded_text[:100] if decoded_text else 'N/A'}...\n"
+                            f"⏰ الوقت: {last_msg.get('date', 'N/A')}",
+                            parse_mode="HTML"
+                        )
+                    else:
+                        bot.send_message(
+                            chat_id,
+                            f"⚠️ <b>لا توجد رسائل - {site_name}</b>\n\n"
+                            f"👤 الحساب: <code>{account.get('username')}</code>",
+                            parse_mode="HTML"
+                        )
+                else:
+                    bot.send_message(
+                        chat_id,
+                        f"❌ <b>خطأ في جلب البيانات - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"HTTP Status: {r.status_code}",
+                        parse_mode="HTML"
+                    )
+            finally:
+                USERNAME, PASSWORD = old_username, old_password
         
-        await status_msg.delete()
-        await context.bot.send_message(chat_id=uid, text=pe(report_text), parse_mode="HTML", reply_markup=main_keyboard(uid))
-
-        random_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
-        if success_ids:
-            s_file = io.BytesIO(("\n".join(success_ids)).encode()); s_file.name = f"SUCCESS_{random_suffix}.txt"
-            await context.bot.send_document(chat_id=uid, document=s_file, caption="✅ Success User List")
-        if fail_ids:
-            f_file = io.BytesIO(("\n".join(fail_ids)).encode()); f_file.name = f"FAILED_{random_suffix}.txt"
-            await context.bot.send_document(chat_id=uid, document=f_file, caption="❌ Failed User List")
-        
-        return
-
-    # ==================== BOT SETTINGS NAVIGATION ====================
-    if text == "BOT SETTINGS" and context.user_data.get("admin_mode") == "main" and is_admin(uid):
-        context.user_data["bot_settings_mode"] = "main"
-        context.user_data["zenex_config_mode"] = None
-        await update.message.reply_text(pe("⚙️ <b>BOT SETTINGS</b>"), parse_mode="HTML", reply_markup=bot_settings_keyboard())
-        return
-
-    if text == "BACK TO BOT SETTINGS" and is_admin(uid):
-        context.user_data["bot_settings_mode"] = "main"
-        context.user_data["zenex_config_mode"] = None
-        await update.message.reply_text(pe("⚙️ <b>BOT SETTINGS</b>"), parse_mode="HTML", reply_markup=bot_settings_keyboard())
-        return
-
-    if text == "ZENEX CONFIG" and context.user_data.get("bot_settings_mode") == "main" and is_admin(uid):
-        context.user_data["zenex_config_mode"] = "main"
-        await update.message.reply_text(pe("📡 <b>ZENEX PANEL CONFIG</b>"), parse_mode="HTML", reply_markup=zenex_config_keyboard())
-        return
-
-    if text == "SERVICE MANAGEMENT" and context.user_data.get("admin_mode") == "main" and is_admin(uid):
-        context.user_data["service_mgmt_mode"] = "main"
-        await update.message.reply_text(pe("🔧 <b>SERVICE MANAGEMENT</b>"), parse_mode="HTML", reply_markup=service_management_keyboard())
-        return
-
-    # ==================== ADD / REMOVE ADMIN ====================
-    if text == "ADD ADMIN" and context.user_data.get("bot_settings_mode") == "main" and is_admin(uid):
-        context.user_data["bot_settings_mode"] = "add_admin"
-        s = load_settings()
-        admin_list = "\n".join(f"• <code>{a}</code>" for a in s.get("admins", []))
-        await update.message.reply_text(
-            pe(f"➕ <b>ADD ADMIN</b>\n\n<blockquote>Current admins:\n{admin_list}</blockquote>\n\n"
-            f"Send the <b>Telegram User ID</b> to add as admin:"),
-            parse_mode="HTML", reply_markup=cancel_keyboard())
-        return
-
-    if context.user_data.get("bot_settings_mode") == "add_admin" and is_admin(uid):
-        if not text.lstrip("-").isdigit():
-            await update.message.reply_text("❌ Invalid ID! Send a numeric Telegram ID.")
-            return
-        new_admin_id = int(text)
-        s = load_settings()
-        admins = s.get("admins", [])
-        if new_admin_id in admins:
-            await update.message.reply_text("⚠️ This user is already an admin!", reply_markup=bot_settings_keyboard())
-        else:
-            admins.append(new_admin_id)
-            s["admins"] = admins
-            save_settings(s)
-            await update.message.reply_text(
-                pe(f"✅ <b>ADMIN ADDED!</b>\n<blockquote>🆔 ID: <code>{new_admin_id}</code></blockquote>"),
-                parse_mode="HTML", reply_markup=bot_settings_keyboard())
-        context.user_data["bot_settings_mode"] = "main"
-        return
-
-    if text == "REMOVE ADMIN" and context.user_data.get("bot_settings_mode") == "main" and is_admin(uid):
-        context.user_data["bot_settings_mode"] = "remove_admin"
-        s = load_settings()
-        admin_list = "\n".join(f"• <code>{a}</code>" for a in s.get("admins", []))
-        await update.message.reply_text(
-            pe(f"➖ <b>REMOVE ADMIN</b>\n\n<blockquote>Current admins:\n{admin_list}</blockquote>\n\n"
-            f"Send the <b>Telegram User ID</b> to remove from admin:"),
-            parse_mode="HTML", reply_markup=cancel_keyboard())
-        return
-
-    if context.user_data.get("bot_settings_mode") == "remove_admin" and is_admin(uid):
-        if not text.lstrip("-").isdigit():
-            await update.message.reply_text("❌ Invalid ID! Send a numeric Telegram ID.")
-            return
-        rem_id = int(text)
-        s = load_settings()
-        admins = s.get("admins", [])
-        owners = s.get("owners", [])
-        if rem_id in owners and rem_id == uid:
-            await update.message.reply_text("❌ Cannot remove yourself (owner)!", reply_markup=bot_settings_keyboard())
-        elif rem_id not in admins:
-            await update.message.reply_text("⚠️ This user is not an admin!", reply_markup=bot_settings_keyboard())
-        else:
-            admins.remove(rem_id)
-            s["admins"] = admins
-            save_settings(s)
-            await update.message.reply_text(
-                pe(f"✅ <b>ADMIN REMOVED!</b>\n<blockquote>🆔 ID: <code>{rem_id}</code></blockquote>"),
-                parse_mode="HTML", reply_markup=bot_settings_keyboard())
-        context.user_data["bot_settings_mode"] = "main"
-        return
-
-    # ==================== SET OTP GROUP LINK ====================
-    if text == "SET OTP GROUP LINK" and context.user_data.get("bot_settings_mode") == "main" and is_admin(uid):
-        context.user_data["bot_settings_mode"] = "set_otp_link"
-        s = load_settings()
-        cur = s.get("otp_group_url", "Not set")
-        await update.message.reply_text(
-            pe(f"🔗 <b>SET OTP GROUP LINK</b>\n\n<blockquote>Current: <code>{cur}</code></blockquote>\n\n"
-            f"Send the new OTP group invite link (e.g. https://t.me/+xxxxx):"),
-            parse_mode="HTML", reply_markup=cancel_keyboard())
-        return
-
-    if context.user_data.get("bot_settings_mode") == "set_otp_link" and is_admin(uid):
-        s = load_settings()
-        s["otp_group_url"] = text.strip()
-        save_settings(s)
-        await update.message.reply_text(
-            pe(f"✅ <b>OTP GROUP LINK UPDATED!</b>\n<blockquote>{html.escape(text.strip())}</blockquote>"),
-            parse_mode="HTML", reply_markup=bot_settings_keyboard())
-        context.user_data["bot_settings_mode"] = "main"
-        return
-
-    # ==================== SET FORCE JOIN CHANNEL ====================
-    if text == "SET FORCE CHANNEL" and context.user_data.get("bot_settings_mode") == "main" and is_admin(uid):
-        context.user_data["bot_settings_mode"] = "set_force_channel"
-        s = load_settings()
-        cur = s.get("force_join_channel") or "Not set (disabled)"
-        await update.message.reply_text(
-            pe(f"📢 <b>SET FORCE JOIN CHANNEL</b>\n\n<blockquote>Current: <code>{cur}</code></blockquote>\n\n"
-            f"Send channel username (e.g. @mychannel) or <b>DISABLE</b> to turn off:"),
-            parse_mode="HTML", reply_markup=cancel_keyboard())
-        return
-
-    if context.user_data.get("bot_settings_mode") == "set_force_channel" and is_admin(uid):
-        s = load_settings()
-        val = text.strip()
-        if val.upper() == "DISABLE":
-            s["force_join_channel"] = None
-            await update.message.reply_text(pe("✅ <b>Force Join DISABLED!</b>"), parse_mode="HTML", reply_markup=bot_settings_keyboard())
-        else:
-            if not val.startswith("@") and not val.lstrip("-").isdigit():
-                val = "@" + val
-            s["force_join_channel"] = val
-            await update.message.reply_text(
-                pe(f"✅ <b>FORCE JOIN CHANNEL SET!</b>\n<blockquote>{html.escape(val)}</blockquote>"),
-                parse_mode="HTML", reply_markup=bot_settings_keyboard())
-        save_settings(s)
-        context.user_data["bot_settings_mode"] = "main"
-        return
-
-    # ==================== SET OTP FORWARD CHAT ID ====================
-    if text == "SET OTP CHAT ID" and context.user_data.get("bot_settings_mode") == "main" and is_admin(uid):
-        context.user_data["bot_settings_mode"] = "set_otp_chat_id"
-        s = load_settings()
-        cur = s.get("otp_group_chat_id") or "Not set"
-        await update.message.reply_text(
-            pe(f"📋 <b>SET OTP FORWARD CHAT ID</b>\n\n<blockquote>Current: <code>{cur}</code></blockquote>\n\n"
-            f"Send the Chat ID where OTPs are forwarded (e.g. -1001234567890):\n"
-            f"Or send <b>DISABLE</b> to clear:"),
-            parse_mode="HTML", reply_markup=cancel_keyboard())
-        return
-
-    if context.user_data.get("bot_settings_mode") == "set_otp_chat_id" and is_admin(uid):
-        s = load_settings()
-        val = text.strip()
-        if val.upper() == "DISABLE":
-            s["otp_group_chat_id"] = None
-            await update.message.reply_text(pe("✅ <b>OTP Chat ID CLEARED!</b>"), parse_mode="HTML", reply_markup=bot_settings_keyboard())
-        elif val.lstrip("-").isdigit():
-            s["otp_group_chat_id"] = int(val)
-            await update.message.reply_text(
-                pe(f"✅ <b>OTP CHAT ID SET!</b>\n<blockquote><code>{val}</code></blockquote>"),
-                parse_mode="HTML", reply_markup=bot_settings_keyboard())
-        else:
-            await update.message.reply_text("❌ Invalid! Send a numeric chat ID (e.g. -1001234567890)")
-            return
-        save_settings(s)
-        context.user_data["bot_settings_mode"] = "main"
-        return
-
-    # ==================== ZENEX CONFIG HANDLERS ====================
-    if text == "SET API KEY" and context.user_data.get("zenex_config_mode") == "main" and is_admin(uid):
-        context.user_data["zenex_config_mode"] = "set_api_key"
-        s = load_settings()
-        cur = s.get("zenex_api_key", "Not set")
-        await update.message.reply_text(
-            pe(f"🔑 <b>SET ZENEX API KEY</b>\n\n<blockquote>Current: <code>{cur[:20]}...</code></blockquote>\n\nSend new API key:"),
-            parse_mode="HTML", reply_markup=cancel_keyboard())
-        return
-
-    if context.user_data.get("zenex_config_mode") == "set_api_key" and is_admin(uid):
-        s = load_settings()
-        s["zenex_api_key"] = text.strip()
-        save_settings(s)
-        await update.message.reply_text(
-            pe(f"✅ <b>ZENEX API KEY UPDATED!</b>\n<blockquote><code>{html.escape(text.strip()[:20])}...</code></blockquote>"),
-            parse_mode="HTML", reply_markup=zenex_config_keyboard())
-        context.user_data["zenex_config_mode"] = "main"
-        return
-
-    if text == "SET BASE URL" and context.user_data.get("zenex_config_mode") == "main" and is_admin(uid):
-        context.user_data["zenex_config_mode"] = "set_base_url"
-        s = load_settings()
-        cur = s.get("zenex_base_url", "Not set")
-        await update.message.reply_text(
-            pe(f"🌐 <b>SET ZENEX BASE URL</b>\n\n<blockquote>Current: <code>{cur}</code></blockquote>\n\nSend new base URL (e.g. https://api.zenexnetwork.com):"),
-            parse_mode="HTML", reply_markup=cancel_keyboard())
-        return
-
-    if context.user_data.get("zenex_config_mode") == "set_base_url" and is_admin(uid):
-        s = load_settings()
-        s["zenex_base_url"] = text.strip().rstrip("/")
-        save_settings(s)
-        await update.message.reply_text(
-            pe(f"✅ <b>BASE URL UPDATED!</b>\n<blockquote><code>{html.escape(s['zenex_base_url'])}</code></blockquote>"),
-            parse_mode="HTML", reply_markup=zenex_config_keyboard())
-        context.user_data["zenex_config_mode"] = "main"
-        return
-
-    if text == "SET ALLOWED SERVICES" and context.user_data.get("zenex_config_mode") == "main" and is_admin(uid):
-        context.user_data["zenex_config_mode"] = "set_services"
-        s = load_settings()
-        cur = ", ".join(s.get("allowed_services", []))
-        await update.message.reply_text(
-            pe(f"📋 <b>SET ALLOWED ZENEX SERVICES</b>\n\n<blockquote>Current:\n<code>{cur}</code></blockquote>\n\n"
-            f"Send comma-separated list:\n<i>e.g. Instagram,Facebook,WhatsApp,TikTok</i>"),
-            parse_mode="HTML", reply_markup=cancel_keyboard())
-        return
-
-    if context.user_data.get("zenex_config_mode") == "set_services" and is_admin(uid):
-        services = [x.strip() for x in text.split(",") if x.strip()]
-        s = load_settings()
-        s["allowed_services"] = services
-        save_settings(s)
-        _ranges_cache["data"] = {}
-        _ranges_cache["updated_at"] = 0
-        svc_text = "\n".join(f"• {sv}" for sv in services)
-        await update.message.reply_text(
-            pe(f"✅ <b>ALLOWED SERVICES UPDATED!</b>\n\n<blockquote>{svc_text}</blockquote>"),
-            parse_mode="HTML", reply_markup=zenex_config_keyboard())
-        context.user_data["zenex_config_mode"] = "main"
-        return
-
-    if text == "VIEW ZENEX CONFIG" and context.user_data.get("zenex_config_mode") == "main" and is_admin(uid):
-        s = load_settings()
-        api_key = s.get("zenex_api_key", "N/A")
-        base_url = s.get("zenex_base_url", "N/A")
-        services = ", ".join(s.get("allowed_services", []))
-        otp_link = s.get("otp_group_url", "N/A")
-        force_ch = s.get("force_join_channel") or "Disabled"
-        otp_chat = s.get("otp_group_chat_id") or "Not set"
-        msg = (
-            f"📡 <b>ZENEX PANEL CONFIGURATION</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"<blockquote>🔑 API KEY: <code>{html.escape(api_key[:30])}...</code></blockquote>\n"
-            f"<blockquote>🌐 BASE URL: <code>{html.escape(base_url)}</code></blockquote>\n"
-            f"<blockquote>📋 ALLOWED SERVICES:\n{html.escape(services)}</blockquote>\n"
-            f"<blockquote>🔗 OTP GROUP LINK: {html.escape(otp_link)}</blockquote>\n"
-            f"<blockquote>📢 FORCE CHANNEL: {html.escape(str(force_ch))}</blockquote>\n"
-            f"<blockquote>📋 OTP CHAT ID: <code>{otp_chat}</code></blockquote>"
-        )
-        await update.message.reply_text(pe(msg), parse_mode="HTML", reply_markup=zenex_config_keyboard())
-        return
-
-    # ==================== SERVICE MANAGEMENT HANDLERS ====================
-    if text == "LIST SERVICES" and context.user_data.get("service_mgmt_mode") == "main" and is_admin(uid):
-        s = load_settings()
-        manual = s.get("manual_services", [])
-        if not manual:
-            await update.message.reply_text("📋 No manual services added yet.", reply_markup=service_management_keyboard())
-        else:
-            lines = []
-            for i, svc in enumerate(manual):
-                countries = svc.get("countries", [])
-                clines = "\n".join(
-                    f"   {c.get('flag','🌍')} {c.get('name','?')} — <code>{', '.join(c.get('ranges',[]))}</code>"
-                    for c in countries
+        elif site_key == "Fly sms":
+            old_username, old_password = USERNAME2, PASSWORD2
+            try:
+                USERNAME2 = account.get("username")
+                PASSWORD2 = account.get("password")
+                
+                if not is_logged_in_site2:
+                    print(f"[Fly sms] غير مسجل دخول لـ {account.get('username')}، محاولة تسجيل الدخول...")
+                    if not login_site2():
+                        bot.send_message(
+                            chat_id,
+                            f"❌ <b>فشل تسجيل الدخول - {site_name}</b>\n\n"
+                            f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                            f"⚠️ يجب تسجيل الدخول أولاً قبل اختبار جلب الكود",
+                            parse_mode="HTML"
+                        )
+                        return
+                    time.sleep(2)
+                
+                url = build_ajax_url_site2()
+                
+                data = None
+                max_retries = 5
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        headers = {
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Accept": "application/json, text/javascript, */*; q=0.01",
+                            "X-Requested-With": "XMLHttpRequest",
+                            "Referer": BASE_URL2 + "/ints/agent/SMSCDRReports"
+                        }
+                        r = session2.get(url, timeout=HTTP_TIMEOUT2, headers=headers)
+                        
+                        if r.status_code in [502, 503, 504]:
+                            print(f"[Fly sms] ⚠️ السيرفر مشغول ({r.status_code}) - محاولة {attempt}/{max_retries}")
+                            if attempt < max_retries:
+                                time.sleep(15 * attempt)
+                                continue
+                            else:
+                                bot.send_message(
+                                    chat_id,
+                                    f"⚠️ <b>السيرفر مشغول - {site_name}</b>\n\n"
+                                    f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                                    f"⏳ الخطأ: {r.status_code} - السيرفر تحت ضغط\n"
+                                    f"💡 حاول مرة أخرى بعد دقيقة",
+                                    parse_mode="HTML"
+                                )
+                                return
+                        
+                        if r.status_code == 200:
+                            data = r.json()
+                            break
+                        else:
+                            if attempt < max_retries:
+                                time.sleep(10)
+                                continue
+                    except Exception as e:
+                        print(f"[Fly sms] ⚠️ خطأ في المحاولة {attempt}: {e}")
+                        if attempt < max_retries:
+                            time.sleep(10)
+                            continue
+                
+                if data:
+                    messages = data.get("data", [])
+                    if messages:
+                        last_msg = messages[0]
+                        sms_text = last_msg[5] if len(last_msg) > 5 else "N/A"
+                        number = last_msg[2] if len(last_msg) > 2 else "N/A"
+                        date_str = last_msg[0] if len(last_msg) > 0 else "N/A"
+                        
+                        otp, decoded_text = extract_from_message(sms_text)
+                        
+                        bot.send_message(
+                            chat_id,
+                            f"✅ <b>نجح جلب الكود - {site_name}</b>\n\n"
+                            f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                            f"📱 الرقم: <code>{number}</code>\n"
+                            f"📝 الرسالة: {decoded_text[:100] if decoded_text else sms_text[:100]}...\n"
+                            f"⏰ الوقت: {date_str}",
+                            parse_mode="HTML"
+                        )
+                    else:
+                        bot.send_message(
+                            chat_id,
+                            f"⚠️ <b>لا توجد رسائل - {site_name}</b>\n\n"
+                            f"👤 الحساب: <code>{account.get('username')}</code>",
+                            parse_mode="HTML"
+                        )
+                else:
+                    bot.send_message(
+                        chat_id,
+                        f"❌ <b>خطأ في جلب البيانات - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"⚠️ فشل الاتصال بالسيرفر",
+                        parse_mode="HTML"
+                    )
+            except Exception as e:
+                bot.send_message(
+                    chat_id,
+                    f"❌ <b>خطأ في معالجة البيانات - {site_name}</b>\n\n"
+                    f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                    f"⚠️ التفاصيل: {str(e)}",
+                    parse_mode="HTML"
                 )
-                lines.append(f"{i+1}. <b>{html.escape(svc['name'])}</b>\n{clines}")
-            msg = f"📋 <b>MANUAL SERVICES ({len(manual)})</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n" + "\n\n".join(lines)
-            await update.message.reply_text(pe(msg), parse_mode="HTML", reply_markup=service_management_keyboard())
-        return
+            finally:
+                USERNAME2, PASSWORD2 = old_username, old_password
+        
+        elif site_key == "Number_Panel":
+            old_username, old_password = USERNAME3, PASSWORD3
+            try:
+                USERNAME3 = account.get("username")
+                PASSWORD3 = account.get("password")
+                api_token = account.get("api_token") or SETTINGS[site_key].get("api_token")
+                
+                if api_token:
+                    api_url = "http://147.135.212.197/crapi/st/viewstats"
+                    r = session3.get(api_url, params={"token": api_token, "records": 10}, timeout=HTTP_TIMEOUT3)
+                    if r.status_code == 200:
+                        try:
+                            data = r.json()
+                            if isinstance(data, list) and data:
+                                last_msg = data[0]
+                                sms_text = last_msg[2]
+                                number = last_msg[1]
+                                date_str = last_msg[3]
+                                
+                                otp, decoded_text = extract_from_message(sms_text)
+                                
+                                bot.send_message(
+                                    chat_id,
+                                    f"✅ <b>نجح جلب الكود - {site_name} (API)</b>\n\n"
+                                    f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                                    f"📱 الرقم: <code>{number}</code>\n"
+                                    f"📝 الرسالة: {decoded_text[:100] if decoded_text else sms_text[:100]}...\n"
+                                    
+                                    f"⏰ الوقت: {date_str}",
+                                    parse_mode="HTML"
+                                )
+                                return
+                        except Exception as e:
+                            print(f"API parse error: {e}")
 
-    # ── ADD SERVICE: Step 1 — Service Name ──
-    if text == "ADD SERVICE" and context.user_data.get("service_mgmt_mode") == "main" and is_admin(uid):
-        context.user_data["service_mgmt_mode"] = "add_name"
-        await update.message.reply_text(
-            pe("➕ <b>ADD MANUAL SERVICE</b>\n\n"
-            "<blockquote>Step 1: Send the <b>Service Name</b>\n"
-            "e.g. FACEBOOK, WHATSAPP, INSTAGRAM</blockquote>"),
-            parse_mode="HTML", reply_markup=cancel_keyboard())
-        return
+                if not is_logged_in_site3:
+                    print(f"[Number_Panel] غير مسجل دخول لـ {account.get('username')}، محاولة تسجيل الدخول...")
+                    if not login_site3():
+                        bot.send_message(
+                            chat_id,
+                            f"❌ <b>فشل تسجيل الدخول - {site_name}</b>\n\n"
+                            f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                            f"⚠️ يجب تسجيل الدخول أولاً قبل اختبار جلب الكود",
+                            parse_mode="HTML"
+                        )
+                        return
+                    time.sleep(2)
+                
+                url = BASE_URL3 + AJAX_PATH3
+                params = {
+                    "draw": 1,
+                    "start": 0,
+                    "length": 10
+                }
+                
+                r = session3.get(url, params=params, timeout=HTTP_TIMEOUT3)
+                
+                if r.status_code == 200:
+                    try:
+                        data = r.json()
+                        messages = data.get("data", []) or data.get("aaData", [])
+                        if messages:
+                            last_msg = messages[0]
+                            sms_text = last_msg[IDX_SMS_SITE3] if len(last_msg) > IDX_SMS_SITE3 else "N/A"
+                            number = last_msg[IDX_NUMBER_SITE3] if len(last_msg) > IDX_NUMBER_SITE3 else "N/A"
+                            date_str = last_msg[IDX_DATE_SITE3] if len(last_msg) > IDX_DATE_SITE3 else "N/A"
+                            
+                            otp, decoded_text = extract_from_message(sms_text)
+                            
+                            bot.send_message(
+                                chat_id,
+                                f"✅ <b>نجح جلب الكود - {site_name}</b>\n\n"
+                                f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                                f"📱 الرقم: <code>{number}</code>\n"
+                                f"📝 الرسالة: {decoded_text[:100] if decoded_text else sms_text[:100]}...\n"
+                                f"⏰ الوقت: {date_str}",
+                                parse_mode="HTML"
+                            )
+                        else:
+                            bot.send_message(
+                                chat_id,
+                                f"⚠️ <b>لا توجد رسائل - {site_name}</b>\n\n"
+                                f"👤 الحساب: <code>{account.get('username')}</code>",
+                                parse_mode="HTML"
+                            )
+                    except Exception as e:
+                        bot.send_message(
+                            chat_id,
+                            f"❌ <b>خطأ في معالجة البيانات - {site_name}</b>\n\n"
+                            f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                            f"⚠️ التفاصيل: {str(e)}",
+                            parse_mode="HTML"
+                        )
+                else:
+                    bot.send_message(
+                        chat_id,
+                        f"❌ <b>خطأ في جلب البيانات - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"HTTP Status: {r.status_code}",
+                        parse_mode="HTML"
+                    )
+            finally:
+                USERNAME3, PASSWORD3 = old_username, old_password
+        
+        elif site_key == "Bolt":
+            bot.send_message(
+                chat_id,
+                f"⚠️ <b>اختبار جلب الكود غير مدعوم حالياً - {site_name}</b>\n\n"
+                f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                f"📝 يمكنك استخدام اختبار تسجيل الدخول للتحقق من الحساب",
+                parse_mode="HTML"
+            )
+        
+        elif site_key == "iVASMS":
+            old_username, old_password = USERNAME5, PASSWORD5
+            try:
+                USERNAME5 = account.get("username")
+                PASSWORD5 = account.get("password")
+                
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                
+                test_session = requests.Session()
+                test_session.verify = False
+                test_session.headers.update({
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Connection": "keep-alive"
+                })
+                
+                resp = test_session.get(LOGIN_PAGE_URL5, timeout=HTTP_TIMEOUT5)
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                csrf_input = soup.find('input', {'name': '_token'})
+                if not csrf_input:
+                    bot.send_message(chat_id, f"❌ <b>فشل الاتصال - {site_name}</b>\n\n⚠️ لم يتم العثور على CSRF token", parse_mode="HTML")
+                    return
+                
+                csrf = csrf_input.get('value')
+                payload = {'_token': csrf, 'email': USERNAME5, 'password': PASSWORD5}
+                headers = {"Content-Type": "application/x-www-form-urlencoded", "Referer": LOGIN_PAGE_URL5}
+                
+                resp = test_session.post(LOGIN_POST_URL5, data=payload, headers=headers, timeout=HTTP_TIMEOUT5, allow_redirects=True)
+                
+                if 'portal' not in resp.url and 'login' in resp.url:
+                    bot.send_message(chat_id, f"❌ <b>فشل تسجيل الدخول - {site_name}</b>\n\n👤 الحساب: <code>{account.get('username')}</code>", parse_mode="HTML")
+                    return
+                
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                csrf_input = soup.find('input', {'name': '_token'})
+                if csrf_input:
+                    csrf = csrf_input.get('value')
+                
+                today = date.today()
+                from_date = (today - timedelta(days=7)).strftime("%d/%m/%Y")
+                to_date = today.strftime("%d/%m/%Y")
+                
+                payload = {'from': from_date, 'to': to_date, '_token': csrf}
+                headers = {'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Referer': SMS_RECEIVED_URL5}
+                
+                resp = test_session.post(GET_SMS_URL5, data=payload, headers=headers, timeout=HTTP_TIMEOUT5)
+                
+                if resp.status_code != 200:
+                    bot.send_message(chat_id, f"❌ <b>خطأ في جلب البيانات - {site_name}</b>\n\nHTTP Status: {resp.status_code}", parse_mode="HTML")
+                    return
+                
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                items = soup.select("div.item div.card.card-body")
+                ranges = []
+                for item in items:
+                    onclick = item.get('onclick', '')
+                    match = re.search(r"getDetials\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", str(onclick) if onclick else "")
+                    if match:
+                        ranges.append(match.group(1))
+                
+                if not ranges:
+                    bot.send_message(chat_id, f"⚠️ <b>لا توجد رسائل - {site_name}</b>\n\n👤 الحساب: <code>{account.get('username')}</code>", parse_mode="HTML")
+                    return
+                
+                first_range = ranges[0]
+                start_datetime = f"{today.strftime('%Y-%m-%d')} 00:00:00"
+                end_datetime = f"{today.strftime('%Y-%m-%d')} 23:59:59"
+                
+                payload = {'_token': csrf, 'start': start_datetime, 'end': end_datetime, 'range': first_range}
+                resp = test_session.post(GET_SMS_NUMBER_URL5, data=payload, headers=headers, timeout=HTTP_TIMEOUT5)
+                
+                numbers = []
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, 'html.parser')
+                    for item in soup.select("[onclick]"):
+                        onclick = item.get('onclick', '')
+                        phone_match = re.search(r"getNumber[^\(]*\(['\"]([^'\"]+)['\"]", str(onclick) if onclick else "")
+                        if phone_match:
+                            phone = phone_match.group(1)
+                            if phone and len(phone) > 5:
+                                numbers.append(phone)
+                    if not numbers:
+                        all_numbers = re.findall(r'["\']?(\d{10,15})["\']?', resp.text)
+                        numbers.extend(all_numbers[:10])
+                
+                if not numbers:
+                    bot.send_message(chat_id, f"⚠️ <b>لا توجد أرقام - {site_name}</b>\n\n👤 الحساب: <code>{account.get('username')}</code>\nRange: {first_range}", parse_mode="HTML")
+                    return
+                
+                first_phone = numbers[0]
+                payload = {'_token': csrf, 'start': start_datetime, 'end': end_datetime, 'Number': first_phone, 'Range': first_range}
+                resp = test_session.post(GET_SMS_MESSAGE_URL5, data=payload, headers=headers, timeout=HTTP_TIMEOUT5)
+                
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, 'html.parser')
+                    message = None
+                    for selector in [".col-9.col-sm-6 p", ".col-sm-6 p"]:
+                        el = soup.select_one(selector)
+                        if el:
+                            message = el.text.strip()
+                            break
+                    if not message:
+                        for p in soup.find_all('p'):
+                            text = p.text.strip()
+                            if len(text) > 15:
+                                message = text
+                                break
+                    
+                    if message:
+                        otp, decoded_text = extract_from_message(message)
+                        bot.send_message(
+                            chat_id,
+                            f"✅ <b>نجح جلب الكود - {site_name}</b>\n\n"
+                            f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                            f"📱 الرقم: <code>{first_phone}</code>\n"
+                            f"📝 الرسالة: {(decoded_text[:100] if decoded_text else message[:100])}...\n"
+                            
+                            f"📊 Ranges: {len(ranges)} | Numbers: {len(numbers)}",
+                            parse_mode="HTML"
+                        )
+                    else:
+                        bot.send_message(chat_id, f"⚠️ <b>لا توجد رسالة - {site_name}</b>\n\n📱 الرقم: {first_phone}", parse_mode="HTML")
+                else:
+                    bot.send_message(chat_id, f"❌ <b>خطأ في جلب الرسالة - {site_name}</b>\n\nHTTP Status: {resp.status_code}", parse_mode="HTML")
+                    
+            except Exception as e:
+                bot.send_message(chat_id, f"❌ <b>خطأ - {site_name}</b>\n\n⚠️ {str(e)}", parse_mode="HTML")
+            finally:
+                USERNAME5, PASSWORD5 = old_username, old_password
+        
+        elif site_key in ["MSI", "proton SMS", "IMS", "Roxy SMS"]:
+            session_obj = session6 if site_key == "MSI" else (session7 if site_key == "proton SMS" else (session8 if site_key == "IMS" else session9))
+            base_url = BASE_URL6 if site_key == "MSI" else (BASE_URL7 if site_key == "proton SMS" else (BASE_URL8 if site_key == "IMS" else BASE_URL9))
+            ajax_path = AJAX_PATH6 if site_key == "MSI" else (AJAX_PATH7 if site_key == "proton SMS" else (AJAX_PATH8 if site_key == "IMS" else AJAX_PATH9))
+            timeout = HTTP_TIMEOUT6 if site_key == "MSI" else (HTTP_TIMEOUT7 if site_key == "proton SMS" else (HTTP_TIMEOUT8 if site_key == "IMS" else HTTP_TIMEOUT9))
+            
+            result = test_bolt_type_login(site_key, account)
+            if not result:
+                bot.send_message(
+                    chat_id,
+                    f"❌ <b>فشل تسجيل الدخول - {site_name}</b>\n\n"
+                    f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                    f"⚠️ يجب تسجيل الدخول أولاً قبل اختبار جلب الكود",
+                    parse_mode="HTML"
+                )
+                return
+            
+            time.sleep(2)
+            url = base_url + ajax_path
+            params = {
+                "draw": 1,
+                "start": 0,
+                "length": 10
+            }
+            
+            try:
+                
+                for attempt in range(3):
+                    try:
+                        r = session_obj.get(url, params=params, timeout=timeout)
+                        break
+                    except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
+                        if attempt == 2: raise
+                        time.sleep(2)
+                
+                if r.status_code == 200:
+                    try:
+                        data = r.json()
+                        messages = data.get("data", [])
+                        if messages:
+                            last_msg = messages[0]
+                            sms_text = last_msg[5] if len(last_msg) > 5 else "N/A"
+                            number = last_msg[2] if len(last_msg) > 2 else "N/A"
+                            date_str = last_msg[0] if len(last_msg) > 0 else "N/A"
+                            
+                            otp, decoded_text = extract_from_message(sms_text)
+                            
+                            bot.send_message(
+                                chat_id,
+                                f"✅ <b>نجح جلب الكود - {site_name}</b>\n\n"
+                                f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                                f"📱 الرقم: <code>{number}</code>\n"
+                                f"📝 الرسالة: {decoded_text[:100] if decoded_text else sms_text[:100]}...\n"
+                                
+                                f"⏰ الوقت: {date_str}",
+                                parse_mode="HTML"
+                            )
+                        else:
+                            bot.send_message(
+                                chat_id,
+                                f"⚠️ <b>لا توجد رسائل - {site_name}</b>\n\n"
+                                f"👤 الحساب: <code>{account.get('username')}</code>",
+                                parse_mode="HTML"
+                            )
+                    except Exception as e:
+                        bot.send_message(
+                            chat_id,
+                            f"❌ <b>خطأ في معالجة البيانات - {site_name}</b>\n\n"
+                            f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                            f"⚠️ التفاصيل: {str(e)}",
+                            parse_mode="HTML"
+                        )
+                else:
+                    bot.send_message(
+                        chat_id,
+                        f"❌ <b>خطأ في جلب البيانات - {site_name}</b>\n\n"
+                        f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                        f"HTTP Status: {r.status_code}",
+                        parse_mode="HTML"
+                    )
+            except Exception as e:
+                bot.send_message(
+                    chat_id,
+                    f"❌ <b>خطأ في الاتصال - {site_name}</b>\n\n"
+                    f"👤 الحساب: <code>{account.get('username')}</code>\n"
+                    f"⚠️ التفاصيل: {str(e)}",
+                    parse_mode="HTML"
+                )
+    
+    except Exception as e:
+        bot.send_message(
+            chat_id,
+            f"❌ <b>خطأ أثناء اختبار جلب الكود - {site_name}</b>\n\n"
+            f"⚠️ الخطأ: {str(e)}",
+            parse_mode="HTML"
+        )
 
-    if context.user_data.get("service_mgmt_mode") == "add_name" and is_admin(uid):
-        context.user_data["new_svc_name"] = text.strip().upper()
-        context.user_data["new_svc_countries"] = []
-        context.user_data["service_mgmt_mode"] = "add_country"
-        await update.message.reply_text(
-            pe(f"➕ <b>{html.escape(context.user_data['new_svc_name'])}</b>\n\n"
-            f"<blockquote>Step 2: Send the <b>Country Name</b>\n"
-            f"e.g. Bangladesh, Nigeria, India</blockquote>\n\n"
-            f"Send country name ↓"),
-            parse_mode="HTML", reply_markup=cancel_keyboard())
-        return
+def extract_sms(html_text, debug_mode=False):
+    soup = BeautifulSoup(html_text, "html.parser")
+    messages = []
+    
+    table = soup.find("table", class_="table")
+    if not table:
+        all_tables = soup.find_all("table")
+        if all_tables:
+            table = all_tables[0]
+        else:
+            return []
+        
+    tbody = table.find("tbody")
+    if not tbody:
+        rows = table.find_all("tr")
+    else:
+        rows = tbody.find_all("tr")
+    
+    row_count = 0
+    for row in rows:
+        tds = row.find_all("td")
+        if not tds:
+            continue
+        
+        row_count += 1
+        cols = [td.get_text(separator=" ", strip=True) for td in tds]
+        
+        if debug_mode and row_count <= 3:
+            print(f"  صف {row_count}: {len(cols)} عمود - {cols[:8] if len(cols) > 7 else cols}")
+        
+        if not cols or len(cols) < 5:
+            continue
+        
+        msg = {
+            "date": cols[0] if len(cols) > 0 else "",
+            "ref": cols[1] if len(cols) > 1 else "",
+            "source": cols[2] if len(cols) > 2 else "",
+            "client": cols[3] if len(cols) > 3 else "",
+            "destination": cols[4] if len(cols) > 4 else "",
+            "raw": cols[5] if len(cols) > 5 else (cols[4] if len(cols) > 4 else "")
+        }
+        
+        if msg["date"] and msg["raw"] and len(msg["raw"]) > 3:
+            messages.append(msg)
+    
+    return messages
 
-    # ── ADD SERVICE: DONE — save service (must be checked BEFORE add_country handler) ──
-    if text == "DONE" and context.user_data.get("service_mgmt_mode") == "add_country" and is_admin(uid):
-        svc_name = context.user_data.get("new_svc_name")
-        countries_done = context.user_data.get("new_svc_countries", [])
-        if not svc_name or not countries_done:
-            await update.message.reply_text("❌ No data to save. Start again.", reply_markup=service_management_keyboard())
-            context.user_data["service_mgmt_mode"] = "main"
-            return
-        s = load_settings()
-        manual = s.get("manual_services", [])
-        manual.append({"name": svc_name, "countries": countries_done})
-        s["manual_services"] = manual
-        save_settings(s)
-        done_lines = "\n".join(f"  {c['flag']} {c['name']} — <code>{', '.join(c['ranges'])}</code>" for c in countries_done)
-        await update.message.reply_text(
-            pe(f"✅ <b>SERVICE SAVED!</b>\n\n"
-            f"<blockquote>📱 <b>{html.escape(svc_name)}</b>\n{done_lines}</blockquote>"),
-            parse_mode="HTML", reply_markup=service_management_keyboard())
-        context.user_data["service_mgmt_mode"] = "main"
-        for k in ["new_svc_name", "new_svc_countries", "new_svc_cur_country"]:
-            context.user_data.pop(k, None)
-        return
+def normalize_otp_from_text(text):
+    if not text: 
+        return None
+    
+    candidates = []
+    
+    telegram_pattern = r'(?:telegram|تيليجرام|تلجرام)\s*(?:code|كود)?\s*[:\s]*(\d{4,6})'
+    match = re.search(telegram_pattern, text, re.IGNORECASE)
+    if match:
+        digits = match.group(1)
+        candidates.append({
+            'otp': digits,
+            'position': match.start(),
+            'confidence': 100
+        })
+    
+    instagram_pattern = r'(\d{3})\s+(\d{3})\s+is\s+your\s+Instagram\s+code'
+    match = re.search(instagram_pattern, text, re.IGNORECASE)
+    if match:
+        digits = match.group(1) + match.group(2)
+        candidates.append({
+            'otp': f"{digits[:3]} {digits[3:]}",
+            'position': match.start(),
+            'confidence': 99
+        })
+    
+    code_keyword_pattern = r'(?:code|كود|رمز|verification|تحقق)[:\s]*(\d{4,8})'
+    for match in re.finditer(code_keyword_pattern, text, re.IGNORECASE):
+        digits = match.group(1)
+        if 4 <= len(digits) <= 8:
+            candidates.append({
+                'otp': digits,
+                'position': match.start(),
+                'confidence': 95
+            })
+    
+    spaced_triple_pattern = r'(\d{3})\s+(\d{3})'
+    for match in re.finditer(spaced_triple_pattern, text):
+        digits = match.group(1) + match.group(2)
+        if len(digits) == 6:
+            candidates.append({
+                'otp': f"{digits[:3]} {digits[3:]}",
+                'position': match.start(),
+                'confidence': 90
+            })
+    
+    high_confidence_pattern = r'(\d)\s+(\d)\s+(\d)\s*-\s*(\d)\s+(\d)\s+(\d)'
+    for match in re.finditer(high_confidence_pattern, text):
+        digits = re.sub(r'\D', '', match.group(0))
+        if len(digits) == 6:
+            candidates.append({
+                'otp': f"{digits[:3]} {digits[3:]}",
+                'position': match.start(),
+                'confidence': 85
+            })
+    
+    spaced_digits_pattern = r'(\d)\s+(\d)\s+(\d)\s+(\d)\s+(\d)\s+(\d)'
+    for match in re.finditer(spaced_digits_pattern, text):
+        digits = re.sub(r'\D', '', match.group(0))
+        if len(digits) == 6:
+            candidates.append({
+                'otp': f"{digits[:3]} {digits[3:]}",
+                'position': match.start(),
+                'confidence': 80
+            })
+    
+    hyphen_pattern = r'(\d{3})\s*-\s*(\d{3})'
+    for match in re.finditer(hyphen_pattern, text):
+        digits = re.sub(r'\D', '', match.group(0))
+        if len(digits) == 6:
+            candidates.append({
+                'otp': f"{digits[:3]}-{digits[3:]}",
+                'position': match.start(),
+                'confidence': 98
+            })
+    
+    
+    rtl_whatsapp_pattern = r'[\u200e\u200f\u202a-\u202e]?(\d{3})\s*-\s*(\d{3})'
+    for match in re.finditer(rtl_whatsapp_pattern, text):
+        digits = match.group(1) + match.group(2)
+        if len(digits) == 6:
+            candidates.append({
+                'otp': f"{match.group(1)}-{match.group(2)}",
+                'position': match.start(),
+                'confidence': 110
+            })
 
-    # ── ADD SERVICE: Step 2 — Country Name ──
-    if context.user_data.get("service_mgmt_mode") == "add_country" and is_admin(uid):
-        country_name = text.strip().title()
-        context.user_data["new_svc_cur_country"] = country_name
-        context.user_data["service_mgmt_mode"] = "add_range"
-        svc_name = context.user_data.get("new_svc_name", "?")
-        countries_done = context.user_data.get("new_svc_countries", [])
-        done_text = ""
-        if countries_done:
-            done_text = "\n\n<blockquote>✅ Already added:\n" + "\n".join(
-                f"  {c['flag']} {c['name']}" for c in countries_done) + "</blockquote>"
-        await update.message.reply_text(
-            pe(f"➕ <b>{html.escape(svc_name)}</b> — 🌍 <b>{html.escape(country_name)}</b>{done_text}\n\n"
-            f"<blockquote>Step 3: Send the <b>Range</b> for {html.escape(country_name)}\n\n"
-            f"Format: Country Code + XXX\n"
-            f"🇧🇩 Bangladesh → <code>880XXX</code>\n"
-            f"🇳🇬 Nigeria → <code>234XXX</code>\n"
-            f"🇮🇳 India → <code>91XXXXX</code>\n"
-            f"🇲🇾 Malaysia → <code>60XXXXX</code>\n"
-            f"🇮🇩 Indonesia → <code>62XXXXX</code>\n\n"
-            f"Multiple ranges: <code>880XXX, 8801XXX</code></blockquote>"),
-            parse_mode="HTML", reply_markup=cancel_keyboard())
-        return
+    six_digits_pattern = r'\b\d{6}\b'
+    for match in re.finditer(six_digits_pattern, text):
+        digits = match.group(0)
+        candidates.append({
+            'otp': f"{digits[:3]} {digits[3:]}",
+            'position': match.start(),
+            'confidence': 70
+        })
+    
+    five_digits_pattern = r'\b\d{5}\b'
+    for match in re.finditer(five_digits_pattern, text):
+        digits = match.group(0)
+        candidates.append({
+            'otp': digits,
+            'position': match.start(),
+            'confidence': 65
+        })
+    
+    four_digits_pattern = r'\b\d{4}\b'
+    for match in re.finditer(four_digits_pattern, text):
+        digits = match.group(0)
+        candidates.append({
+            'otp': digits,
+            'position': match.start(),
+            'confidence': 60
+        })
+    
+    if candidates:
+        candidates.sort(key=lambda x: (-x['confidence'], x['position']))
+        return candidates[0]['otp']
+    
+    all_digits = re.findall(r'\d+', text)
+    for digit_group in reversed(all_digits):
+        if len(digit_group) >= 4:
+            return digit_group
+    
+    return None
 
-    # ── ADD SERVICE: Step 3 — Ranges for that country ──
-    if context.user_data.get("service_mgmt_mode") == "add_range" and is_admin(uid):
-        raw_ranges = [r.strip().upper() for r in text.split(",") if r.strip()]
-        country_name = context.user_data.get("new_svc_cur_country", "Unknown")
-        # Detect flag from first range
-        flag, detected = "🌍", country_name
-        if raw_ranges:
-            import re as _re
-            prefix = _re.sub(r'[xX]+$', '', raw_ranges[0]).strip()
-            pfx_d  = _re.sub(r'\D', '', prefix)
-            flag, detected = get_country_info(pfx_d)
-        countries_done = context.user_data.get("new_svc_countries", [])
-        countries_done.append({"name": country_name, "flag": flag, "ranges": raw_ranges})
-        context.user_data["new_svc_countries"] = countries_done
-        context.user_data["service_mgmt_mode"] = "add_country"
-        context.user_data.pop("new_svc_cur_country", None)
-        ranges_text = ", ".join(raw_ranges)
-        done_lines = "\n".join(f"  {c['flag']} {c['name']} — <code>{', '.join(c['ranges'])}</code>" for c in countries_done)
-        await update.message.reply_text(
-            pe(f"✅ <b>{flag} {html.escape(country_name)}</b> added!\n"
-            f"<blockquote>Ranges: <code>{html.escape(ranges_text)}</code></blockquote>\n\n"
-            f"<blockquote>Countries so far:\n{done_lines}</blockquote>\n\n"
-            f"Send another <b>Country Name</b> to add more,\n"
-            f"or send <b>DONE</b> to save the service."),
-            parse_mode="HTML", reply_markup=cancel_keyboard())
-        return
+def extract_from_message(raw_text):
+    if not raw_text: 
+        return None, None
+    
+    decoded_text = try_decode(raw_text)
+    text = html.unescape(decoded_text)
+    otp = normalize_otp_from_text(text)
+    
+    return otp, text
 
-    if text == "REMOVE SERVICE" and context.user_data.get("service_mgmt_mode") == "main" and is_admin(uid):
-        s = load_settings()
-        manual = s.get("manual_services", [])
-        if not manual:
-            await update.message.reply_text("📋 No services to remove.", reply_markup=service_management_keyboard())
-            return
-        lines = "\n".join(f"{i+1}. <b>{html.escape(svc['name'])}</b>" for i, svc in enumerate(manual))
-        context.user_data["service_mgmt_mode"] = "remove"
-        await update.message.reply_text(
-            pe(f"➖ <b>REMOVE SERVICE</b>\n\n<blockquote>{lines}</blockquote>\n\n"
-            f"Send the <b>number</b> of the service to remove:"),
-            parse_mode="HTML", reply_markup=cancel_keyboard())
-        return
+def clean_number(num_str: str) -> str:
+    if num_str is None:
+        return ""
+    if isinstance(num_str, (int, float)):
+        return str(int(num_str))
+    return re.sub(r'\D', '', str(num_str))
 
-    if context.user_data.get("service_mgmt_mode") == "remove" and is_admin(uid):
-        if not text.isdigit():
-            await update.message.reply_text("❌ Send a valid number from the list.")
-            return
-        idx = int(text) - 1
-        s = load_settings()
-        manual = s.get("manual_services", [])
-        if idx < 0 or idx >= len(manual):
-            await update.message.reply_text(f"❌ Invalid number! Choose 1-{len(manual)}.")
-            return
-        removed = manual.pop(idx)
-        s["manual_services"] = manual
-        save_settings(s)
-        await update.message.reply_text(
-            pe(f"✅ <b>SERVICE REMOVED!</b>\n<blockquote>📱 {html.escape(removed['name'])}</blockquote>"),
-            parse_mode="HTML", reply_markup=service_management_keyboard())
-        context.user_data["service_mgmt_mode"] = "main"
-        return
-        return
+IDX_DATE_SITE2 = 0
+IDX_NUMBER_SITE2 = 2
+IDX_SMS_SITE2 = 5
 
-    # Force join check for regular users
-    if not is_admin(uid):
-        if not await check_force_join(update, context):
-            return
+def retry_request_site2(func, max_retries=5, retry_delay=10):
+    attempt = 0
+    last_error = None
+    while attempt < max_retries:
+        attempt += 1
+        try:
+            return func()
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_error = e
+            backoff = min(60, retry_delay * attempt)
+            print(f"⚠️ [Fly sms] محاولة {attempt}/{max_retries} فشلت: {type(e).__name__}")
+            print(f"⏳ [Fly sms] انتظار {backoff} ثانية قبل إعادة المحاولة...")
+            time.sleep(backoff)
+        except requests.exceptions.HTTPError as e:
+            last_error = e
+            status_code = e.response.status_code if e.response else 0
+            if status_code in [502, 503, 504]:
+                backoff = min(60, 10 + (attempt * 5))
+                print(f"⚠️ [Fly sms] خطأ {status_code} - محاولة {attempt}/{max_retries}")
+                print(f"⏳ [Fly sms] السيرفر مشغول، انتظار {backoff} ثانية...")
+                time.sleep(backoff)
+            elif status_code == 404:
+                backoff = min(60, 15 + (attempt * 5))
+                print(f"⚠️ [Fly sms] خطأ 404 - محاولة {attempt}/{max_retries}")
+                print(f"⏳ [Fly sms] انتظار {backoff} ثانية...")
+                time.sleep(backoff)
+            else:
+                print(f"❌ [Fly sms] خطأ HTTP {status_code}: {e}")
+                raise
+        except Exception as e:
+            error_str = str(e)
+            if "503" in error_str or "502" in error_str or "504" in error_str or "Service" in error_str:
+                last_error = e
+                backoff = min(60, 10 + (attempt * 5))
+                print(f"⚠️ [Fly sms] خطأ سيرفر - محاولة {attempt}/{max_retries}: {error_str[:100]}")
+                print(f"⏳ [Fly sms] انتظار {backoff} ثانية...")
+                time.sleep(backoff)
+            elif "404" in error_str or "Not Found" in error_str:
+                last_error = e
+                backoff = min(60, 15 + (attempt * 5))
+                print(f"⚠️ [Fly sms] خطأ 404 - محاولة {attempt}/{max_retries}")
+                print(f"⏳ [Fly sms] انتظار {backoff} ثانية...")
+                time.sleep(backoff)
+            else:
+                print(f"❌ [Fly sms] خطأ غير متوقع: {e}")
+                raise
+    
+    print(f"❌ [Fly sms] استنفدت جميع المحاولات ({max_retries})")
+    if last_error:
+        raise last_error
+    raise Exception("Max retries exceeded")
 
-    await update.message.reply_text("🔹 PLEASE USE THE BUTTONS BELOW:", reply_markup=main_keyboard(uid))
+def try_decode_site2(raw):
+    if raw is None:
+        return ""
+    
+    if isinstance(raw, str):
+        cleaned = raw.replace('\x00', '').strip()
+        if cleaned:
+            return cleaned
+        return ""
+    
+    if isinstance(raw, bytes):
+        b = raw
+    else:
+        text_str = str(raw)
+        cleaned = text_str.replace('\x00', '').strip()
+        if cleaned:
+            return cleaned
+        return ""
+    
+    for enc in ("utf-8", "cp1256", "windows-1256", "iso-8859-6", "utf-16-be", "utf-16-le", "latin-1"):
+        try:
+            s = b.decode(enc, errors='ignore')
+            cleaned = s.replace('\x00', '').strip()
+            if cleaned:
+                return cleaned
+        except:
+            continue
+    
+    return b.decode('utf-8', errors='replace').replace('\x00', '').strip()
 
-# ==================== COMMAND HANDLERS SECTION ====================
-
-async def get1number_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if is_user_banned(uid):
-        await update.message.reply_text("🚫 YOU ARE BANNED 🚫", reply_markup=main_keyboard(uid))
-        return
-    await show_app_selection(update, context)
-
-async def searchotp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if is_user_banned(uid):
-        await update.message.reply_text("🚫 YOU ARE BANNED 🚫", reply_markup=main_keyboard(uid))
-        return
-    context.user_data["mode"] = "search_otp"
-    await update.message.reply_text("🔍 **ENTER THE NUMBER TO SEARCH OTP:**", parse_mode="Markdown")
-
-async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if is_user_banned(uid):
-        await update.message.reply_text("🚫 YOU ARE BANNED 🚫", reply_markup=main_keyboard(uid))
-        return
-    balance = get_user(uid)['balance']
-    await update.message.reply_text(f"💰 BALANCE: `{format_balance(balance)} BDT`", parse_mode="Markdown", reply_markup=main_keyboard(uid))
-
-async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if is_user_banned(uid):
-        await update.message.reply_text("🚫 YOU ARE BANNED 🚫", reply_markup=main_keyboard(uid))
-        return
-    user_data = get_user(uid)
-    stats = get_user_stats(uid)
-    user = update.effective_user
-    profile_text = (
-        f"👤 **YOUR PROFILE**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🏷️ NAME: `{user.full_name}`\n"
-        f"🆔 USERNAME: @{user.username or 'No username'}\n"
-        f"🗝️ ID: `{uid}`\n\n"
-        f"💵 BALANCE: {format_balance(user_data.get('balance', 0))} BDT\n\n"
-        f"✨ TODAY: 📱 {stats['today_numbers']} | 🔑 {stats['today_otps']}\n"
-        f"🔥 7 DAYS: 📱 {stats['last7d_numbers']} | 🔑 {stats['last7d_otps']}\n"
-        f"🌐 ALL TIME: 📱 {stats['total_numbers']} | 🔑 {stats['total_otps']}"
-    )
-    await update.message.reply_text(profile_text, parse_mode="Markdown")
-
-async def refer_command_slash(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if is_user_banned(uid):
-        await update.message.reply_text("🚫 YOU ARE BANNED 🚫", reply_markup=main_keyboard(uid))
-        return
-    await refer_command(update, context)
-
-async def leaderboard_command_slash(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if is_user_banned(uid):
-        await update.message.reply_text("🚫 YOU ARE BANNED 🚫", reply_markup=main_keyboard(uid))
-        return
-    await leaderboard_command(update, context)
-
-# ==================== START & CALLBACK SECTION ====================
-
-async def check_force_join(update, context):
-    """Returns True if user is allowed to proceed. False if they need to join first."""
-    s = load_settings()
-    channel = s.get("force_join_channel")
-    if not channel:
-        return True
-    uid = update.effective_user.id
-    if is_admin(uid):
-        return True
+def clean_html_site2(text):
+    if text is None or text == "":
+        return ""
     try:
-        member = await context.bot.get_chat_member(channel, uid)
-        if member.status in ("member", "administrator", "creator", "restricted"):
-            return True
-    except Exception:
-        pass
-    channel_clean = str(channel).lstrip("@")
+        text = str(text) if not isinstance(text, str) else text
+        text = re.sub(r'<[^>]+>', '', text)
+        text = html.unescape(text)
+        text = text.replace('\x00', '').strip()
+        return text
+    except Exception as e:
+        print(f"[Site2] ⚠️ خطأ في clean_html: {e} - القيمة: {repr(text)}")
+        try:
+            return str(text) if text else ""
+        except:
+            return ""
+
+
+def solve_captcha_timesms(html_content):
+    match = re.search(r'(\d+)\s*([+\-*/])\s*(\d+)\s*=?\s*\?', html_content)
+    if match:
+        n1, op, n2 = int(match.group(1)), match.group(2), int(match.group(3))
+        if op == '+': return str(n1 + n2)
+        elif op == '-': return str(n1 - n2)
+        elif op == '*': return str(n1 * n2)
+        elif op == '/': return str(n1 // n2) if n2 else '0'
+    return None
+
+def login_site10(account=None):
+    global is_logged_in_site10, session10
+    print("[TimeSMS] 🔄 محاولة تسجيل الدخول...")
+    
+    site_key = "TimeSMS"
+    if account:
+        user = account.get("username")
+        pw = account.get("password")
+        sess = requests.Session()
+        sess.headers.update(session10.headers)
+    else:
+        user = USERNAME10
+        pw = PASSWORD10
+        sess = session10
+
+    login_url = SETTINGS[site_key]["login_page_url"]
+    submit_url = SETTINGS[site_key]["login_post_url"]
+
     try:
-        chat = await context.bot.get_chat(channel)
-        invite_url = chat.invite_link or f"https://t.me/{channel_clean}"
-    except Exception:
-        invite_url = f"https://t.me/{channel_clean}"
-    btn = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ JOIN CHANNEL", url=invite_url, style="primary")
-    ]])
-    await update.message.reply_text(
-        pe(f"⚠️ <b>FORCE JOIN REQUIRED!</b>\n\n"
-        f"<blockquote>বট ব্যবহার করতে আগে আমাদের চ্যানেলে জয়েন করুন।\n"
-        f"জয়েন করার পর আবার চেষ্টা করুন।</blockquote>"),
-        parse_mode="HTML",
-        reply_markup=btn
-    )
+        resp = sess.get(login_url, timeout=15)
+        captcha = solve_captcha_timesms(resp.text)
+        if not captcha:
+            print("[TimeSMS] ❌ فشل حل الكابتشا")
+            return False
+        
+        data = {'username': user, 'password': pw, 'capt': captcha}
+        login_resp = sess.post(submit_url, data=data, headers={'Referer': login_url}, timeout=15, allow_redirects=True)
+        
+        if 'login' not in str(login_resp.url).lower():
+            if not account: is_logged_in_site10 = True
+            print("[TimeSMS] ✅ تم تسجيل الدخول بنجاح")
+            return sess if account else True
+    except Exception as e:
+        print(f"[TimeSMS] ❌ خطأ في تسجيل الدخول: {e}")
     return False
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    uid_str = str(uid)
+def login_site2():
+    global is_logged_in_site2
+    print("[Fly sms] 🔄 محاولة تسجيل الدخول...")
+    
+    session2.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive"
+    })
+    
+    def do_login():
+        try:
+            resp = session2.get(LOGIN_PAGE_URL2, timeout=HTTP_TIMEOUT2)
+            
+            if resp.status_code in [502, 503, 504]:
+                print(f"[Fly sms] ⚠️ السيرفر مشغول ({resp.status_code})")
+                raise requests.exceptions.HTTPError(f"{resp.status_code} Server Error", response=resp)
+            
+            match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
+            if not match:
+                print("[Fly sms] ⚠️ لم يتم العثور على captcha في صفحة تسجيل الدخول")
+                if resp.status_code != 200:
+                    raise Exception(f"HTTP {resp.status_code}")
+                return False
+            
+            num1, num2 = int(match.group(1)), int(match.group(2))
+            captcha_answer = num1 + num2
+            print(f"[Fly sms] 🧮 حل captcha: {num1} + {num2} = {captcha_answer}")
+            
+            payload = {
+                "username": USERNAME2,
+                "password": PASSWORD2,
+                "capt": str(captcha_answer)
+            }
+            
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Referer": LOGIN_PAGE_URL2,
+                "Origin": BASE_URL2,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            }
+            
+            print(f"[Fly sms] 📤 إرسال طلب تسجيل الدخول لـ: {USERNAME2}")
+            
+            resp = session2.post(LOGIN_POST_URL2, data=payload, headers=headers, timeout=HTTP_TIMEOUT2, allow_redirects=True)
+            
+            print(f"[Fly sms] 📊 حالة الاستجابة: {resp.status_code}")
+            
+            if resp.status_code in [502, 503, 504]:
+                print(f"[Fly sms] ⚠️ السيرفر مشغول ({resp.status_code})")
+                raise requests.exceptions.HTTPError(f"{resp.status_code} Server Error", response=resp)
+            
+            if ("dashboard" in resp.text.lower() or 
+                "logout" in resp.text.lower() or 
+                "agent" in resp.url.lower() or
+                "/ints/agent" in resp.url or
+                resp.url != LOGIN_PAGE_URL2):
+                print("[Fly sms] ✅ تم تسجيل الدخول بنجاح")
+                is_logged_in_site2 = True
+                
+                try:
+                    session2.get(BASE_URL2 + "/ints/agent/SMSCDRReports", timeout=HTTP_TIMEOUT2)
+                    print("[Fly sms] ✅ تم زيارة صفحة SMSCDRReports")
+                except:
+                    pass
+                
+                return True
+            else:
+                print("[Fly sms] ❌ فشل تسجيل الدخول")
+                if "incorrect" in resp.text.lower() or "invalid" in resp.text.lower():
+                    print("[Fly sms] ⚠️ اسم المستخدم أو كلمة المرور غير صحيحة")
+                return False
+                
+        except requests.exceptions.HTTPError as e:
+            print(f"[Fly sms] ⚠️ خطأ HTTP: {e}")
+            raise
+        except Exception as e:
+            print(f"[Fly sms] ❌ خطأ في تسجيل الدخول: {e}")
+            raise
+    
+    try:
+        return retry_request_site2(do_login, max_retries=5, retry_delay=15)
+    except:
+        return False
 
-    existing_data = load_data(USER_DATA_FILE)
-    is_new_user = uid_str not in existing_data
-    if is_new_user:
-        get_user(uid)
+def build_ajax_url_site2(wide_range=False):
+    if wide_range:
+        start_date = date.today() - timedelta(days=5)
+        end_date = date.today() + timedelta(days=1)
+    else:
+        start_date = date.today()
+        end_date = date.today() + timedelta(days=1)
+    
+    fdate1 = f"{start_date.strftime('%Y-%m-%d')} 00:00:00"
+    fdate2 = f"{end_date.strftime('%Y-%m-%d')} 23:59:59"
+    q = (
+        f"fdate1={quote_plus(fdate1)}&fdate2={quote_plus(fdate2)}&frange=&fclient=&fnum=&fcli=&fgdate=&fgmonth=&fgrange="
+        f"&fgclient=&fgnumber=&fgcli=&fg=0&sEcho=1&iColumns=9&sColumns=%2C%2C%2C%2C%2C%2C%2C%2C&iDisplayStart=0&iDisplayLength=50000"
+        f"&mDataProp_0=0&mDataProp_1=1&mDataProp_2=2&mDataProp_3=3&mDataProp_4=4&mDataProp_5=5&mDataProp_6=6&mDataProp_7=7&mDataProp_8=8"
+        f"&sSearch=&bRegex=false&iSortCol_0=0&sSortDir_0=desc&iSortingCols=1&_={int(time.time()*1000)}"
+    )
+    return BASE_URL2 + AJAX_PATH2 + "?" + q
 
-    args = context.args
-    if args:
-        param = args[0]
-        if is_range_request(param):
-            await request_queue.put({'type': 'auto_number', 'update': update, 'context': context, 'range_text': param})
-            return
-        elif is_referral_request(param) and is_new_user:
+def fetch_ajax_json_site2(url):
+    global is_logged_in_site2
+    
+    def do_fetch():
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": BASE_URL2 + "/ints/agent/SMSCDRReports"
+        }
+        r = session2.get(url, timeout=HTTP_TIMEOUT2, headers=headers)
+        
+        if r.status_code == 403:
+            raise Exception("Session expired")
+        
+        if r.status_code in [502, 503, 504]:
+            raise requests.exceptions.HTTPError(f"{r.status_code} Server Error", response=r)
+        
+        if r.status_code == 401:
+            raise Exception("Session expired")
+        
+        r.raise_for_status()
+        
+        try:
+            data = r.json()
+            if not isinstance(data, (dict, list)):
+                raise Exception("Invalid JSON response")
+            return data
+        except (json.JSONDecodeError, ValueError) as e:
+            if "login" in r.text.lower() and r.url and "login" in r.url.lower():
+                raise Exception("Session expired")
+            raise
+    
+    try:
+        return retry_request_site2(do_fetch, max_retries=5, retry_delay=10)
+    except Exception as e:
+        error_str = str(e)
+        if "Session expired" in error_str:
+            print("[Fly sms] ⚠️ انتهت صلاحية الجلسة. إعادة تسجيل الدخول...")
+            is_logged_in_site2 = False
+            if login_site2():
+                is_logged_in_site2 = True
+                try:
+                    return retry_request_site2(do_fetch, max_retries=5, retry_delay=10)
+                except:
+                    return None
+            else:
+                return None
+        if "503" in error_str or "502" in error_str or "504" in error_str:
+            print(f"[Fly sms] ⚠️ السيرفر مشغول، المحاولة مرة أخرى بعد فترة...")
+            time.sleep(30)
             try:
-                referrer_id = int(param)
-                if referrer_id != uid and str(referrer_id) in existing_data:
-                    current_count = get_referral_count(referrer_id)
-                    new_count = current_count + 1
-                    update_referral_count(referrer_id, new_count)
-                    await update_db_balance(referrer_id, REFERRAL_PRICE)
-                    log_global_activity(referrer_id, "REFERRAL_JOINED", {"referred_user": uid})
-                    try:
-                        await context.bot.send_message(
-                            referrer_id,
-                            pe(f"🎉 <b>NEW REFERRAL!</b>\n\n<blockquote>🗝️ ID: <code>{uid}</code>\n💰 REWARD: {format_balance(REFERRAL_PRICE)} BDT\n👥 TOTAL REFERS: {new_count}</blockquote>"),
-                            parse_mode="HTML"
-                        )
-                    except:
-                        pass
-            except Exception as e:
-                print(f"Referral error: {e}")
+                return retry_request_site2(do_fetch, max_retries=3, retry_delay=15)
+            except:
+                return None
+        print(f"[Fly sms] ❌ خطأ في جلب/تحليل AJAX: {e}")
+        return None
 
-    if not await check_force_join(update, context):
-        return
+def extract_rows_from_json_site2(j):
+    if j is None:
+        return []
+    for key in ("data", "aaData", "rows", "aa_data"):
+        if isinstance(j, dict) and key in j:
+            return j[key]
+    if isinstance(j, list):
+        return j
+    if isinstance(j, dict):
+        for v in j.values():
+            if isinstance(v, list):
+                return v
+    return []
 
-    context.user_data.clear()
-    await update.message.reply_text(pe(get_welcome_message()), parse_mode="HTML")
-    await update.message.reply_text("🔹 PLEASE USE THE BUTTONS BELOW:", reply_markup=main_keyboard(uid))
+def row_to_tuple_site2(row):
+    date_str = ""
+    number_str = ""
+    sms_str = ""
+    try:
+        if isinstance(row, (list, tuple)):
+            if len(row) > IDX_DATE_SITE2:
+                val = row[IDX_DATE_SITE2]
+                date_str = clean_html_site2(str(val) if val is not None else "")
+            if len(row) > IDX_NUMBER_SITE2:
+                val = row[IDX_NUMBER_SITE2]
+                number_str = clean_number(str(val) if val is not None else "")
+            if len(row) > IDX_SMS_SITE2:
+                val = row[IDX_SMS_SITE2]
+                sms_str = try_decode_site2(val) if val is not None else ""
+                sms_str = clean_html_site2(sms_str)
+        elif isinstance(row, dict):
+            for k in ("date","time","datetime","dt","created_at"):
+                if k in row and not date_str:
+                    val = row[k]
+                    date_str = clean_html_site2(str(val) if val is not None else "")
+            for k in ("number","msisdn","cli","from","sender"):
+                if k in row and not number_str:
+                    val = row[k]
+                    number_str = clean_number(str(val) if val is not None else "")
+            for k in ("sms","message","msg","body","text"):
+                if k in row and not sms_str:
+                    val = row[k]
+                    sms_str = try_decode_site2(val) if val is not None else ""
+                    sms_str = clean_html_site2(sms_str)
+            if not sms_str:
+                vals = list(row.values())
+                if len(vals) > IDX_SMS_SITE2:
+                    val = vals[IDX_SMS_SITE2]
+                    sms_str = try_decode_site2(val) if val is not None else ""
+                    sms_str = clean_html_site2(sms_str)
+                elif vals:
+                    val = vals[-1]
+                    sms_str = try_decode_site2(val) if val is not None else ""
+                    sms_str = clean_html_site2(sms_str)
+    except Exception as e:
+        print(f"[Site2] ⚠️ خطأ في row_to_tuple: {e}")
+        print(f"[Site2] Row data: {row}")
+    
+    unique_key = f"{date_str}|{number_str}|{sms_str}"
+    return date_str, number_str, sms_str, unique_key
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    uid = query.from_user.id
-    data = query.data
-    await query.answer()
+def load_last_seen_key_site2():
+    global last_seen_key_site2
+    if os.path.exists(LAST_MESSAGE_FILE_SITE2):
+        try:
+            with open(LAST_MESSAGE_FILE_SITE2, "r", encoding="utf-8") as f:
+                last_seen_key_site2 = f.read().strip()
+                print(f"[Site2] 📋 تم تحميل آخر رسالة مشاهدة: {last_seen_key_site2[:50]}..." if last_seen_key_site2 else "[Site2] 📋 لا توجد رسائل سابقة")
+        except:
+            last_seen_key_site2 = ""
+    else:
+        last_seen_key_site2 = ""
 
-    if not is_admin(uid) and is_user_banned(uid):
-        await query.edit_message_text("🚫 YOU ARE BANNED 🚫")
-        return
+def save_last_seen_key_site2():
+    try:
+        with open(LAST_MESSAGE_FILE_SITE2, "w", encoding="utf-8") as f:
+            f.write(last_seen_key_site2)
+        print(f"[Site2] 💾 تم حفظ آخر رسالة مشاهدة")
+    except Exception as e:
+        print(f"[Site2] ❌ خطأ في حفظ آخر رسالة: {str(e)}")
 
-    # Admin support reply button.
-    if data.startswith("support_reply_"):
-        if not is_admin(uid):
-            await query.answer("Only admins can reply to support messages.", show_alert=True)
-            return
-        target_uid_text = data.replace("support_reply_", "", 1)
-        if not target_uid_text.isdigit():
-            await query.answer("Invalid support user.", show_alert=True)
-            return
-        target_uid = int(target_uid_text)
-        context.user_data["support_reply_uid"] = target_uid
-        await query.message.reply_text(
-            pe(f"✍️ <b>REPLYING TO USER</b> <code>{target_uid}</code>\n\n"
-            "এখন আপনার reply লিখে পাঠান।"),
-            parse_mode="HTML",
-            reply_markup=cancel_keyboard(),
-        )
-        return
+def load_data():
+    global COUNTRIES, CHANNELS, USERS, ADMINS, BANNED, OTP_GROUP, GROUPS, REFERRALS, NUMBERS_ADMINS
 
-    # ZENEXA — APP SELECTION
-    if data.startswith("sel_app_"):
-        app_name = data[8:]
-        top = context.user_data.get("top_ranges_by_app") or (_ranges_cache.get("data") or {})
-        if not top or app_name not in top:
-            await query.answer("App not found. Please try again.", show_alert=True); return
-        ranges = top[app_name].get("ranges", [])
-        if not ranges:
-            await query.answer("No ranges available for this app right now.", show_alert=True); return
-        context.user_data["sel_app"] = app_name
-        context.user_data["sel_ranges"] = ranges
-        btns, seen = [], {}
-        clrs = ["primary"]
-        ci = 0
-        for i, r in enumerate(ranges[:24]):
-            prefix = re.sub(r'[xX]+$', '', str(r)).strip()
-            pfx_d = re.sub(r'\D', '', prefix)
-            flag, cname = get_country_info(pfx_d)
-            label = f"{flag} {cname}"
-            if label not in seen:
-                seen[label] = i
-                btns.append(InlineKeyboardButton(label, callback_data=f"sel_rng_{i}",
-                    api_kwargs={"style": clrs[ci % len(clrs)]}))
-                ci += 1
-        rows = [btns[j:j+2] for j in range(0, len(btns), 2)]
-        rows.append([InlineKeyboardButton("\u25c0\ufe0f BACK", callback_data="back_apps",
-                                          api_kwargs={"style": "primary"})])
-        await query.message.edit_text(
-            pe(f'{get_tg_emoji("get_number_btn")} <b>SELECT COUNTRY</b>\n'
-            f'\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n'
-            f'<blockquote>\U0001f4f1 App: <b>{html.escape(app_name)}</b></blockquote>\n'
-            f'<blockquote>\U0001f30d Select your Country:</blockquote>'),
-            parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
-        return
+    if os.path.exists(COUNTRIES_FILE):
+        with open(COUNTRIES_FILE, "r", encoding="utf-8") as f:
+            COUNTRIES = json.load(f)
 
-    # ZENEXA — RANGE SELECTION
-    if data.startswith("sel_rng_"):
-        idx = int(data[8:])
-        ranges = context.user_data.get("sel_ranges", [])
-        app_name = context.user_data.get("sel_app", "")
-        if idx >= len(ranges):
-            await query.answer("Range not found. Please try again.", show_alert=True); return
-        asyncio.create_task(fast_allocate_number(query, context, ranges[idx], app_name))
-        return
+    if os.path.exists(CHANNELS_FILE):
+        with open(CHANNELS_FILE, "r", encoding="utf-8") as f:
+            CHANNELS = json.load(f)
 
-    # CUSTOM RANGE
-    if data == "custom_range":
-        context.user_data["mode"] = "custom_range"
-        await query.message.edit_text(
-            pe("\u2699\ufe0f <b>CUSTOM RANGE</b>\n\n"
-            "<blockquote>\U0001f4f6 Type your custom range.\n"
-            "Example: <code>234XXX</code> or <code>225XXX</code></blockquote>\n\n"
-            "<blockquote>\u2328\ufe0f Type range below and Send:</blockquote>"),
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("\u25c0\ufe0f BACK", callback_data="back_apps",
-                                      api_kwargs={"style": "primary"})
-            ]]))
-        return
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            USERS = json.load(f)
 
-    # MANUAL SERVICE — Step 1: show countries
-    if data.startswith("manual_svc_"):
-        idx = int(data[len("manual_svc_"):])
-        s = load_settings()
-        manual = s.get("manual_services", [])
-        if idx >= len(manual):
-            await query.answer("Service not found.", show_alert=True); return
-        svc = manual[idx]
-        countries = svc.get("countries", [])
-        if not countries:
-            await query.answer("No countries added for this service yet.", show_alert=True); return
+    if os.path.exists(ADMINS_FILE):
+        with open(ADMINS_FILE, "r", encoding="utf-8") as f:
+            ADMINS = json.load(f)
 
-        clrs = ["primary"]
-        btns = []
-        for ci, c in enumerate(countries):
-            flag = c.get("flag", "🌍")
-            cname = c.get("name", "Unknown")
-            btns.append(InlineKeyboardButton(
-                f"{flag} {cname}",
-                callback_data=f"manual_cnt_{idx}_{ci}",
-                api_kwargs={"style": clrs[ci % len(clrs)]}
-            ))
-        rows = [btns[j:j+2] for j in range(0, len(btns), 2)]
-        rows.append([InlineKeyboardButton(
-            "\u25c0\ufe0f BACK", callback_data="back_apps",
-            api_kwargs={"style": "primary"}
-        )])
-        await query.message.edit_text(
-            pe(f'\U0001f527 <b>{html.escape(svc["name"])}</b>\n'
-            f'\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n'
-            f'<blockquote>\U0001f4f1 App: <b>{html.escape(svc["name"])}</b></blockquote>\n'
-            f'<blockquote>\U0001f30d Select your Country:</blockquote>'),
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(rows)
-        )
-        return
+    if MAIN_ADMIN_ID != 0 and MAIN_ADMIN_ID not in ADMINS:
+        ADMINS.append(MAIN_ADMIN_ID)
+        save_admins()
 
-    # MANUAL SERVICE — Step 2: country selected → directly allocate number
-    if data.startswith("manual_cnt_"):
-        parts = data.split("_")
-        svc_idx = int(parts[2])
-        cnt_idx = int(parts[3])
-        s = load_settings()
-        manual = s.get("manual_services", [])
-        if svc_idx >= len(manual):
-            await query.answer("Service not found.", show_alert=True); return
-        svc = manual[svc_idx]
-        countries = svc.get("countries", [])
-        if cnt_idx >= len(countries):
-            await query.answer("Country not found.", show_alert=True); return
-        country = countries[cnt_idx]
-        ranges = country.get("ranges", [])
-        if not ranges:
-            await query.answer("No ranges for this country.", show_alert=True); return
-        import random
-        range_text = random.choice(ranges).strip().upper()
-        svc_name = svc["name"]
-        asyncio.create_task(fast_allocate_number(query, context, range_text, svc_name))
-        return
+    if os.path.exists(BANNED_FILE):
+        with open(BANNED_FILE, "r", encoding="utf-8") as f:
+            BANNED = json.load(f)
 
-    # MANUAL SERVICE — Step 3: range selected → allocate number
-    if data.startswith("manual_rng_"):
-        parts = data.split("_")
-        svc_idx = int(parts[2])
-        cnt_idx = int(parts[3])
-        rng_idx = int(parts[4])
-        s = load_settings()
-        manual = s.get("manual_services", [])
-        if svc_idx >= len(manual):
-            await query.answer("Service not found.", show_alert=True); return
-        countries = manual[svc_idx].get("countries", [])
-        if cnt_idx >= len(countries):
-            await query.answer("Country not found.", show_alert=True); return
-        ranges = countries[cnt_idx].get("ranges", [])
-        if rng_idx >= len(ranges):
-            await query.answer("Range not found.", show_alert=True); return
-        range_text = ranges[rng_idx].strip().upper()
-        svc_name   = manual[svc_idx]["name"]
-        asyncio.create_task(fast_allocate_number(query, context, range_text, svc_name))
-        return
-    # BACK TO APP LIST
-    if data in ("back_apps", "back_services"):
-        top = context.user_data.get("top_ranges_by_app") or (_ranges_cache.get("data") or {})
-        manual_rows = build_manual_service_buttons()
-        zenex_rows = build_app_buttons_from_cache(top) if top else []
-        all_rows = zenex_rows + manual_rows
-        all_rows.append([InlineKeyboardButton("\u2699\ufe0f CUSTOM RANGE", callback_data="custom_range",
-                                               api_kwargs={"style": "primary"})])
-        msg = f'{get_tg_emoji("get_number_btn")} <b>SELECT APP TO GET NUMBER</b>\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501'
-        await query.message.edit_text(pe(msg), parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(all_rows))
-        return
+    if os.path.exists(OTP_GROUP_FILE):
+        with open(OTP_GROUP_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            OTP_GROUP = data.get("group_id")
 
-    if data == "same_range":
-        r_text = last_range.get(uid)
-        if r_text:
+    if os.path.exists(GROUPS_FILE):
+        with open(GROUPS_FILE, "r", encoding="utf-8") as f:
+            GROUPS = json.load(f)
+    
+    if os.path.exists(REFERRALS_FILE):
+        with open(REFERRALS_FILE, "r", encoding="utf-8") as f:
+            REFERRALS = json.load(f)
+    
+    load_numbers_admins()
+    load_statistics()
+
+
+def save_countries():
+    with open(COUNTRIES_FILE, "w", encoding="utf-8") as f:
+        json.dump(COUNTRIES, f, indent=2, ensure_ascii=False)
+
+def save_channels():
+    with open(CHANNELS_FILE, "w", encoding="utf-8") as f:
+        json.dump(CHANNELS, f, indent=2, ensure_ascii=False)
+
+def save_users():
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(USERS, f, indent=2, ensure_ascii=False)
+
+def save_admins():
+    with open(ADMINS_FILE, "w", encoding="utf-8") as f:
+        json.dump(ADMINS, f, indent=2, ensure_ascii=False)
+
+def save_banned():
+    with open(BANNED_FILE, "w", encoding="utf-8") as f:
+        json.dump(BANNED, f, indent=2, ensure_ascii=False)
+
+def save_otp_group():
+    with open(OTP_GROUP_FILE, "w", encoding="utf-8") as f:
+        json.dump({"group_id": OTP_GROUP}, f, indent=2)
+
+def save_groups():
+    with open(GROUPS_FILE, "w", encoding="utf-8") as f:
+        json.dump(GROUPS, f, indent=2)
+
+def cleanup_old_numbers_files(country_code):
+   
+    pass
+
+def load_referrals():
+    global REFERRALS
+    if os.path.exists(REFERRALS_FILE):
+        try:
+            with open(REFERRALS_FILE, "r", encoding="utf-8") as f:
+                REFERRALS = json.load(f)
+        except:
+            REFERRALS = {}
+    return REFERRALS
+
+def save_referrals(data=None):
+    global REFERRALS
+    if data:
+        REFERRALS = data
+    with open(REFERRALS_FILE, "w", encoding="utf-8") as f:
+        json.dump(REFERRALS, f, indent=2, ensure_ascii=False)
+
+def load_referral_settings():
+    if os.path.exists(REFERRAL_SETTINGS_FILE):
+        try:
+            with open(REFERRAL_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return DEFAULT_REFERRAL_SETTINGS.copy()
+
+def save_referral_settings(settings):
+    with open(REFERRAL_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2, ensure_ascii=False)
+
+def load_withdrawal_requests():
+    if os.path.exists(WITHDRAWAL_REQUESTS_FILE):
+        try:
+            with open(WITHDRAWAL_REQUESTS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return []
+
+def save_withdrawal_requests(requests):
+    with open(WITHDRAWAL_REQUESTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(requests, f, indent=2, ensure_ascii=False)
+
+DEFAULT_WITHDRAWAL_METHODS = {
+    "vodafone": {"name_ar": "فودافون كاش", "name_en": "Vodafone Cash", "enabled": True, "details_ar": "رقم الهاتف", "details_en": "Phone number"},
+    "usdt_trc20": {"name_ar": "USDT (TRC20)", "name_en": "USDT (TRC20)", "enabled": True, "details_ar": "عنوان محفظة TRC20", "details_en": "TRC20 wallet address"},
+    "usdt_bep20": {"name_ar": "USDT (BEP20)", "name_en": "USDT (BEP20)", "enabled": True, "details_ar": "عنوان محفظة BEP20", "details_en": "BEP20 wallet address"},
+    "binance_id": {"name_ar": "Binance ID", "name_en": "Binance ID", "enabled": True, "details_ar": "Binance Pay ID أو Email", "details_en": "Binance Pay ID or Email"}
+}
+
+def load_withdrawal_methods():
+    if os.path.exists(WITHDRAWAL_METHODS_FILE):
+        try:
+            with open(WITHDRAWAL_METHODS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return DEFAULT_WITHDRAWAL_METHODS.copy()
+
+def save_withdrawal_methods(methods):
+    with open(WITHDRAWAL_METHODS_FILE, "w", encoding="utf-8") as f:
+        json.dump(methods, f, indent=2, ensure_ascii=False)
+
+def load_welcome_messages():
+    if os.path.exists(WELCOME_MESSAGES_FILE):
+        try:
+            with open(WELCOME_MESSAGES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return DEFAULT_WELCOME_MESSAGES.copy()
+
+def save_welcome_messages(messages):
+    with open(WELCOME_MESSAGES_FILE, "w", encoding="utf-8") as f:
+        json.dump(messages, f, indent=2, ensure_ascii=False)
+
+def generate_referral_code(user_id):
+    
+    import hashlib
+    hash_input = f"{user_id}_{datetime.now().timestamp()}"
+    return hashlib.md5(hash_input.encode()).hexdigest()[:8].upper()
+
+def get_user_referral_data(user_id):
+    
+    global REFERRALS
+    REFERRALS = load_referrals()
+    user_key = str(user_id)
+    if user_key not in REFERRALS:
+        REFERRALS[user_key] = {
+            "referral_code": generate_referral_code(user_id),
+            "referred_by": None,
+            "referrals": [],
+            "referred_users_codes": {},
+            "active_referrals": 0,
+            "active_referrals_list": [],
+            "codes_received": 0,
+            "balance": 0.0,
+            "total_earned": 0.0,
+            "referral_used": False
+        }
+        save_referrals(REFERRALS)
+    else:
+        if "referral_code" not in REFERRALS[user_key]:
+            REFERRALS[user_key]["referral_code"] = generate_referral_code(user_id)
+            save_referrals(REFERRALS)
+        if "referred_users_codes" not in REFERRALS[user_key]:
+            REFERRALS[user_key]["referred_users_codes"] = {}
+            save_referrals(REFERRALS)
+        if "active_referrals_list" not in REFERRALS[user_key]:
+            REFERRALS[user_key]["active_referrals_list"] = []
+            save_referrals(REFERRALS)
+    return REFERRALS[user_key]
+
+def process_referral(user_id, referrer_id):
+    
+    global REFERRALS
+    REFERRALS = load_referrals()
+    settings = load_referral_settings()
+    
+    user_key = str(user_id)
+    referrer_key = str(referrer_id)
+    
+    if user_key not in REFERRALS:
+        REFERRALS[user_key] = {
+            "referred_by": referrer_key,
+            "referrals": [],
+            "active_referrals": 0,
+            "codes_received": 0,
+            "balance": 0.0,
+            "total_earned": 0.0
+        }
+    else:
+        if REFERRALS[user_key].get("referred_by"):
+            return False
+        REFERRALS[user_key]["referred_by"] = referrer_key
+    
+    if referrer_key not in REFERRALS:
+        REFERRALS[referrer_key] = {
+            "referred_by": None,
+            "referrals": [],
+            "active_referrals": 0,
+            "codes_received": 0,
+            "balance": 0.0,
+            "total_earned": 0.0
+        }
+    
+    if user_key not in REFERRALS[referrer_key]["referrals"]:
+        REFERRALS[referrer_key]["referrals"].append(user_key)
+    
+    save_referrals(REFERRALS)
+    return True
+
+def add_code_bonus(user_id):
+    
+    global REFERRALS
+    REFERRALS = load_referrals()
+    settings = load_referral_settings()
+    
+    user_key = str(user_id)
+    if user_key not in REFERRALS:
+        REFERRALS[user_key] = {
+            "referred_by": None,
+            "referrals": [],
+            "active_referrals": 0,
+            "codes_received": 0,
+            "balance": 0.0,
+            "total_earned": 0.0
+        }
+    
+    REFERRALS[user_key]["codes_received"] += 1
+    code_bonus = settings.get("code_bonus", 0.01)
+    REFERRALS[user_key]["balance"] += code_bonus
+    REFERRALS[user_key]["total_earned"] += code_bonus
+    
+    referrer_key = REFERRALS[user_key].get("referred_by")
+    if referrer_key and referrer_key in REFERRALS:
+        codes_required = settings.get("codes_required_for_referral", 3)
+        user_codes = REFERRALS[user_key]["codes_received"]
+        
+        if user_codes == codes_required:
+            REFERRALS[referrer_key]["active_referrals"] += 1
+            referral_bonus = settings.get("referral_bonus", 0.50)
+            REFERRALS[referrer_key]["balance"] += referral_bonus
+            REFERRALS[referrer_key]["total_earned"] += referral_bonus
+            
             try:
-                await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📢 OTP GROUP", url="https://t.me/volt_x_lite_otp", style="primary")
-                ]]))
+                referrer_lang = get_user_language(int(referrer_key))
+                if referrer_lang == "ar":
+                    notify_msg = (
+                        f"🎉 <b>تهانينا! إحالة جديدة نشطة!</b>\n\n"
+                        f"👤 المستخدم <code>{user_id}</code> أصبح إحالة نشطة!\n"
+                        f"💰 تم إضافة <b>${referral_bonus:.2f}</b> لرصيدك!\n\n"
+                        f"📊 إجمالي الإحالات النشطة: <b>{REFERRALS[referrer_key]['active_referrals']}</b>\n"
+                        f"💵 رصيدك الحالي: <b>${REFERRALS[referrer_key]['balance']:.2f}</b>"
+                    )
+                else:
+                    notify_msg = (
+                        f"🎉 <b>Congratulations! New Active Referral!</b>\n\n"
+                        f"👤 User <code>{user_id}</code> became an active referral!\n"
+                        f"💰 <b>${referral_bonus:.2f}</b> added to your balance!\n\n"
+                        f"📊 Total active referrals: <b>{REFERRALS[referrer_key]['active_referrals']}</b>\n"
+                        f"💵 Your current balance: <b>${REFERRALS[referrer_key]['balance']:.2f}</b>"
+                    )
+                bot.send_message(int(referrer_key), notify_msg, parse_mode="HTML")
+            except Exception as notify_err:
+                print(f"⚠️ خطأ في إرسال إشعار الإحالة: {notify_err}")
+    
+    save_referrals(REFERRALS)
+
+REFERRAL_SETTINGS = load_referral_settings()
+WELCOME_MESSAGES = load_welcome_messages()
+
+def load_statistics():
+    global STATISTICS
+    if os.path.exists(STATISTICS_FILE):
+        try:
+            with open(STATISTICS_FILE, 'r', encoding='utf-8') as f:
+                STATISTICS = json.load(f)
+        except:
+            pass
+
+def save_statistics():
+    with open(STATISTICS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(STATISTICS, f, indent=2, ensure_ascii=False)
+
+def update_statistics():
+    global STATISTICS
+    today = datetime.now().date().isoformat()
+    week_num = datetime.now().isocalendar()[1]
+    month = datetime.now().strftime('%Y-%m')
+    
+    if STATISTICS.get("last_reset_day") != today:
+        STATISTICS["codes_today"] = 0
+        STATISTICS["last_reset_day"] = today
+    
+    if STATISTICS.get("last_reset_week") != week_num:
+        STATISTICS["codes_this_week"] = 0
+        STATISTICS["last_reset_week"] = week_num
+    
+    if STATISTICS.get("last_reset_month") != month:
+        STATISTICS["codes_this_month"] = 0
+        STATISTICS["last_reset_month"] = month
+    
+    STATISTICS["total_codes"] += 1
+    STATISTICS["codes_today"] += 1
+    STATISTICS["codes_this_week"] += 1
+    STATISTICS["codes_this_month"] += 1
+    
+    if today not in STATISTICS.get("daily_history", {}):
+        if "daily_history" not in STATISTICS:
+            STATISTICS["daily_history"] = {}
+        STATISTICS["daily_history"][today] = 0
+    STATISTICS["daily_history"][today] += 1
+    
+    save_statistics()
+
+def get_statistics_text():
+    total_users = len(USERS)
+    total_codes = STATISTICS.get("total_codes", 0)
+    codes_today = STATISTICS.get("codes_today", 0)
+    codes_week = STATISTICS.get("codes_this_week", 0)
+    codes_month = STATISTICS.get("codes_this_month", 0)
+    
+    text = f"📊 <b>إحصائيات البوت</b>\n\n"
+    text += f"👥 <b>إجمالي المستخدمين:</b> {total_users}\n"
+    text += f"🔢 <b>إجمالي الأكواد:</b> {total_codes}\n\n"
+    text += f"📅 <b>أكواد اليوم:</b> {codes_today}\n"
+    text += f"📆 <b>أكواد هذا الأسبوع:</b> {codes_week}\n"
+    text += f"📊 <b>أكواد هذا الشهر:</b> {codes_month}\n"
+    
+    return text
+
+def is_admin(user_id):
+    return user_id in ADMINS
+
+def is_banned(user_id):
+    return user_id in BANNED
+
+def check_subscription(user_id):
+    if not CHANNELS: return True
+    for channel in CHANNELS:
+        try:
+            member = bot.get_chat_member(channel['id'], user_id)
+            if member.status not in ['member', 'administrator', 'creator']:
+                return False
+        except Exception as e:
+            
+            err_msg = str(e).lower()
+            if "member list is inaccessible" in err_msg or "chat not found" in err_msg:
+                
+                print(f"⚠️ Warning: Channel {channel['id']} inaccessible for sub check: {e}")
+                continue
+            return False
+    return True
+
+def get_subscription_message(user_id):
+    lang = get_user_language(user_id)
+    text = "⚠️ <b>يجب الاشتراك في القنوات:</b>\n\n" if lang == "ar" else "⚠️ <b>Subscribe to channels:</b>\n\n"
+    for idx, ch in enumerate(CHANNELS, 1): text += f"{idx}. {ch['name']}\n"
+    return text
+
+def get_full_subscription_keyboard(user_id):
+    markup = InlineKeyboardMarkup(row_width=1)
+    for ch in CHANNELS:
+        try:
+            chat = bot.get_chat(ch['id'])
+        
+            url = None
+            if chat.invite_link:
+                url = chat.invite_link
+            elif chat.username:
+                url = f"https://t.me/{chat.username}"
+            
+            if url:
+                markup.add(InlineKeyboardButton(ch['name'], url=url))
+        except Exception as e:
+            print(f"Error getting channel link: {e}")
+            continue
+    markup.add(InlineKeyboardButton("✅ تم الاشتراك" if get_user_language(user_id) == "ar" else "✅ Subscribed", callback_data="check_sub"))
+    return markup
+
+@bot.callback_query_handler(func=lambda call: call.data == "check_sub")
+def check_sub_callback(call):
+    user_id = call.from_user.id
+    if check_subscription(user_id):
+        try: bot.delete_message(call.message.chat.id, call.message.message_id)
+        except: pass
+        start(call.message)
+    else: 
+        bot.answer_callback_query(call.id, "⚠️ لم تشترك بعد في جميع القنوات!", show_alert=True)
+        try:
+            bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=get_subscription_message(user_id),
+                parse_mode="HTML",
+                reply_markup=get_full_subscription_keyboard(user_id)
+            )
+        except: pass
+
+def get_first_unjoined_channel(user_id):
+    if not CHANNELS: return None
+    for channel in CHANNELS:
+        try:
+            status = bot.get_chat_member(channel['id'], user_id).status
+            if status not in ['member', 'administrator', 'creator']: return channel
+        except: return channel
+    return None
+
+def get_subscription_keyboard():
+
+    markup = InlineKeyboardMarkup(row_width=1)
+
+    for channel in CHANNELS:
+        channel_name = channel.get("name", "Channel")
+        channel_url = channel.get("url", "")
+        btn = InlineKeyboardButton(f"🔗 Join {channel_name}", url=channel_url)
+        markup.add(btn)
+
+    verify_btn = InlineKeyboardButton("✅ تحقق / Verify", callback_data="verify_subscription", style="success")
+    markup.add(verify_btn)
+
+    return markup
+
+def get_all_channels_keyboard(user_id=None):
+    markup = InlineKeyboardMarkup(row_width=1)
+    lang = get_user_language(user_id) if user_id else "ar"
+    
+    for channel in CHANNELS:
+        channel_name = channel.get(f"name_{lang}", channel.get("name", "Channel"))
+        channel_url = channel.get("url", "")
+        markup.add(InlineKeyboardButton(f"📢 {channel_name}", url=channel_url))
+    
+    if lang == "ar":
+        verify_text = "✅ تحقق من الاشتراك"
+    else:
+        verify_text = "✅ Verify Subscription"
+        
+    markup.add(InlineKeyboardButton(verify_text, callback_data="verify_subscription"))
+    
+    return markup
+
+def get_single_channel_keyboard(channel, user_id=None):
+    lang = get_user_language(user_id) if user_id else "ar"
+    markup = InlineKeyboardMarkup()
+    btn_name = channel.get(f"name_{lang}", channel.get("name", "Join 🔗"))
+    markup.add(InlineKeyboardButton(btn_name, url=channel['url']))
+    
+    if lang == "ar":
+        verify_text = "✅ تحقق من الاشتراك"
+    else:
+        verify_text = "✅ Verify Subscription"
+        
+    markup.add(InlineKeyboardButton(verify_text, callback_data="verify_subscription"))
+    return markup
+
+def get_all_channels_message(user_id):
+    lang = get_user_language(user_id)
+    
+    if lang == "ar":
+        text = "🔒 <b>انضم للقنوات التالية للمتابعة</b>\n\n"
+        for i, channel in enumerate(CHANNELS, 1):
+            channel_name = channel.get("name_ar", channel.get("name", "Channel"))
+            text += f"{i}. 📢 <b>{channel_name}</b>\n"
+        return text
+    else:
+        text = "🔒 <b>Join the following channels to continue</b>\n\n"
+        for i, channel in enumerate(CHANNELS, 1):
+            channel_name = channel.get("name_en", channel.get("name", "Channel"))
+            text += f"{i}. 📢 <b>{channel_name}</b>\n"
+        return text
+
+def get_subscription_message(user_id):
+    lang = get_user_language(user_id)
+    text = "⚠️ <b>يجب الاشتراك في القنوات:</b>\n\n" if lang == "ar" else "⚠️ <b>Subscribe to channels:</b>\n\n"
+    for idx, ch in enumerate(CHANNELS, 1): text += f"{idx}. {ch['name']}\n"
+    return text
+
+def get_main_menu_lang(user_id):
+    lang = get_user_language(user_id)
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton(t(user_id, "choose_country"), callback_data="choose_country"),
+        InlineKeyboardButton(t(user_id, "my_account"), callback_data="my_account")
+    )
+    
+    withdraw_text = "💰 سحب الرصيد" if lang == "ar" else "💰 Withdraw"
+    help_text = "❓ مساعدة" if lang == "ar" else "❓ Help"
+    markup.add(
+        InlineKeyboardButton(withdraw_text, callback_data="withdraw_balance"),
+        InlineKeyboardButton(help_text, callback_data="show_instructions")
+    )
+    
+    links = load_button_links()
+    dev_text = "👨‍💻 المطور" if lang == "ar" else "👨‍💻 Developer"
+    markup.add(
+        InlineKeyboardButton(dev_text, url=links.get("developer_link", f"tg://user?id={MAIN_ADMIN_ID}"))
+    )
+    return markup
+
+def get_admin_menu():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("⚙️ إعدادات المواقع", callback_data="admin_sites_menu", style="primary"),
+        InlineKeyboardButton("👥 إدارة الحسابات", callback_data="admin_accounts_menu", style="primary")
+    )
+    markup.add(
+        InlineKeyboardButton("➕ إضافة دولة", callback_data="admin_add_country", style="success"),
+        InlineKeyboardButton("➖ حذف دولة", callback_data="admin_remove_country", style="danger")
+    )
+    markup.add(
+        InlineKeyboardButton("📋 الدول المتاحة", callback_data="admin_list_countries", style="primary")
+    )
+    markup.add(
+        InlineKeyboardButton("📢 إضافة قناة", callback_data="admin_add_channel", style="success"),
+        InlineKeyboardButton("🗑 حذف قناة", callback_data="admin_remove_channel", style="danger")
+    )
+    markup.add(
+        InlineKeyboardButton("📊 القنوات المضافة", callback_data="admin_list_channels", style="primary"),
+        InlineKeyboardButton("📱 إدارة الجروبات", callback_data="admin_groups_menu", style="primary")
+    )
+    markup.add(
+        InlineKeyboardButton("📈 الإحصائيات", callback_data="admin_statistics", style="primary")
+    )
+    markup.add(
+        InlineKeyboardButton("📣 إذاعة", callback_data="admin_broadcast_menu", style="success")
+    )
+    markup.add(
+        InlineKeyboardButton("🔧 إضافة مشرف", callback_data="admin_add_admin", style="success"),
+        InlineKeyboardButton("🗑 حذف مشرف", callback_data="admin_remove_admin", style="danger")
+    )
+    markup.add(
+        InlineKeyboardButton("🚫 حظر مستخدم", callback_data="admin_ban_user", style="danger"),
+        InlineKeyboardButton("✅ إلغاء حظر", callback_data="admin_unban_user", style="success")
+    )
+    markup.add(
+        InlineKeyboardButton("💰 نظام الإحالات", callback_data="admin_referral_settings", style="primary"),
+        InlineKeyboardButton("📝 رسائل الترحيب", callback_data="admin_welcome_messages", style="primary")
+    )
+    markup.add(
+        InlineKeyboardButton("🔗 روابط الأزرار", callback_data="admin_button_links", style="primary"),
+        InlineKeyboardButton("🔘 أزرار رسالة OTP", callback_data="admin_otp_buttons", style="success")
+    )
+    markup.add(
+        InlineKeyboardButton("📥 إنشاء نسخة احتياطية", callback_data="admin_create_backup", style="success"),
+        InlineKeyboardButton("📤 استعادة نسخة احتياطية", callback_data="admin_restore_backup", style="primary")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع للقائمة الرئيسية", callback_data="back_to_main", style="danger"))
+    return markup
+
+def get_sites_menu():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🏢 GROUP", callback_data="site_config_GROUP", style="primary"),
+        InlineKeyboardButton("🔷 Fly sms", callback_data="site_config_Fly sms", style="primary")
+    )
+    markup.add(
+        InlineKeyboardButton("📱 Number Panel", callback_data="site_config_Number_Panel", style="success"),
+        InlineKeyboardButton("⚡ Bolt", callback_data="site_config_Bolt", style="danger"),
+        InlineKeyboardButton("🌐 IMS", callback_data="site_config_IMS", style="primary"),
+        InlineKeyboardButton("🌸 Roxy SMS", callback_data="site_config_Roxy SMS", style="success")
+    )
+    markup.add(
+        InlineKeyboardButton("🌐 iVAS SMS", callback_data="site_config_iVASMS", style="primary")
+    )
+    markup.add(
+        InlineKeyboardButton("🔵 MSI", callback_data="site_config_MSI", style="success"),
+        InlineKeyboardButton(" proton SMS", callback_data="site_config_proton SMS", style="danger")
+    )
+    markup.add(
+        InlineKeyboardButton("🆕 TimeSMS", callback_data="site_config_TimeSMS", style="danger")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع للوحة الأدمن", callback_data="admin", style="primary"))
+    return markup
+
+def get_site_config_menu(site_key, account_id=None):
+    site_name = SETTINGS[site_key]["name"]
+    short_id = account_id[:8] if account_id else ""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("👤 تغيير اليوزر", callback_data=f"site_change_user_{site_key}_{short_id}"),
+        InlineKeyboardButton("🔑 تغيير الباسورد", callback_data=f"site_change_pass_{site_key}_{short_id}")
+    )
+    markup.add(
+        InlineKeyboardButton("⏱ فترة البحث", callback_data=f"site_change_interval_{site_key}"),
+        InlineKeyboardButton("⏳ وقت الانتظار", callback_data=f"site_change_timeout_{site_key}")
+    )
+    markup.add(
+        InlineKeyboardButton("🔓 اختبار تسجيل الدخول", callback_data=f"site_test_login_{site_key}_{short_id}"),
+        InlineKeyboardButton("📥 اختبار جلب كود", callback_data=f"site_test_fetch_{site_key}_{short_id}")
+    )
+    markup.add(
+        InlineKeyboardButton("🆕 TimeSMS", callback_data="site_config_TimeSMS", style="success")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع لقائمة المواقع", callback_data="admin_sites_menu", style="danger"))
+    return markup
+
+def get_site_accounts_selection_menu(site_key):
+    site_name = SETTINGS[site_key]["name"]
+    accounts = get_site_accounts(site_key)
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    
+    buttons = []
+    for idx, account in enumerate(accounts, 1):
+        username = account.get("username", "N/A")
+        account_id = account.get("id", "")
+        short_id = account_id[:8] if account_id else ""
+        buttons.append(
+            InlineKeyboardButton(
+                f"👤 {idx}. {username[:15]}",
+                callback_data=f"select_account_config_{site_key}_{short_id}"
+            )
+        )
+    
+    for i in range(0, len(buttons), 2):
+        if i + 1 < len(buttons):
+            markup.add(buttons[i], buttons[i+1])
+        else:
+            markup.add(buttons[i])
+    
+    markup.add(InlineKeyboardButton("🔙 رجوع لقائمة المواقع", callback_data="admin_sites_menu", style="danger"))
+    return markup
+
+def get_accounts_menu():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🏢 GROUP", callback_data="accounts_site_GROUP", style="primary"),
+        InlineKeyboardButton("🔷 Fly sms", callback_data="accounts_site_Fly sms", style="success")
+    )
+    markup.add(
+        InlineKeyboardButton("📱 Number Panel", callback_data="accounts_site_Number_Panel", style="primary"),
+        InlineKeyboardButton("⚡ Bolt", callback_data="accounts_site_Bolt", style="success"),
+        InlineKeyboardButton("🌐 IMS", callback_data="accounts_site_IMS", style="primary"),
+        InlineKeyboardButton("🌸 Roxy SMS", callback_data="accounts_site_Roxy SMS", style="success")
+    )
+    markup.add(
+        InlineKeyboardButton("🌐 iVAS SMS", callback_data="accounts_site_iVASMS", style="danger")
+    )
+    markup.add(
+        InlineKeyboardButton("🔵 MSI", callback_data="accounts_site_MSI", style="primary"),
+        InlineKeyboardButton("proton SMS", callback_data="accounts_site_proton SMS", style="success")
+    )
+    markup.add(
+        InlineKeyboardButton("🆕 TimeSMS", callback_data="accounts_site_TimeSMS", style="danger")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع للوحة الأدمن", callback_data="admin_panel", style="danger"))
+    return markup
+
+def get_site_accounts_menu(site_key):
+    site_name = SETTINGS[site_key]["name"]
+    accounts = get_site_accounts(site_key)
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    
+    if accounts:
+        buttons = []
+        for idx, account in enumerate(accounts, 1):
+            username = account.get("username", "N/A")
+            account_id = account.get("id", "")
+            short_id = account_id[:8] if account_id else ""
+            buttons.append(
+                InlineKeyboardButton(
+                    f"👤 {idx}. {username[:15]}",
+                    callback_data=f"view_account_{site_key}_{short_id}"
+                )
+            )
+        
+        for i in range(0, len(buttons), 2):
+            if i + 1 < len(buttons):
+                markup.add(buttons[i], buttons[i+1])
+            else:
+                markup.add(buttons[i])
+    
+    markup.add(
+        InlineKeyboardButton("➕ إضافة حساب جديد", callback_data=f"add_account_{site_key}")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع لقائمة المواقع", callback_data="admin_accounts_menu", style="danger"))
+    return markup
+
+def get_account_details_menu(site_key, account_id):
+    short_id = account_id[:8] if account_id else ""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🗑 حذف الحساب", callback_data=f"delete_account_{site_key}_{short_id}"),
+        InlineKeyboardButton("🔙 رجوع للحسابات", callback_data=f"accounts_site_{site_key}")
+    )
+    return markup
+
+def try_decode(raw):
+    if raw is None:
+        return ""
+    
+    if isinstance(raw, str):
+        
+        return raw.replace('\x00', '').strip()
+    
+    if not isinstance(raw, bytes):
+        try:
+            
+            return str(raw).replace('\x00', '').strip()
+        except:
+            return ""
+
+  
+    encodings = (
+        "utf-8", 
+        "utf-16", "utf-16-be", "utf-16-le",
+        "cp1256", "windows-1256", "iso-8859-6", 
+        "cp1251", "windows-1251", "koi8-r",    
+        "latin-1", "iso-8859-1"
+    )
+    
+    for enc in encodings:
+        try:
+            s = raw.decode(enc)
+            
+            return s.replace('\x00', '').strip()
+        except:
+            continue
+    
+    return raw.decode('utf-8', errors='replace').replace('\x00', '').strip()
+
+def mask_number(num):
+    s = str(num)
+    digits = re.sub(r'\D', '', s)
+    if len(digits) <= 6:
+        return s
+    
+    if len(digits) >= 11:
+        return digits[:2] + "••••••" + digits[-3:]
+    return digits[:2] + "•••" + digits[-2:]
+
+import phonenumbers
+from phonenumbers.phonenumberutil import region_code_for_number
+import pycountry
+
+def get_flag(country_code):
+    if not country_code: return "🌍"
+    return ''.join([chr(0x1F1E6 + ord(c) - ord('A')) for c in country_code.upper()])
+
+def detect_country_from_number(number, user_id=None):
+    try:
+        s = str(number).strip()
+        if not s.startswith('+'):
+            s = '+' + s
+        
+       
+        try:
+            parsed = phonenumbers.parse(s)
+        except phonenumbers.NumberParseException:
+            
+            parsed = phonenumbers.parse(s + "00000000")
+            
+        region = phonenumbers.region_code_for_number(parsed)
+        if not region:
+            return "Unknown", "🌍", "UN"
+        
+        lang = get_user_language(user_id) if user_id else "ar"
+        
+       
+        country_name = geocoder.description_for_number(parsed, lang)
+        
+       
+        if not country_name or country_name == "Unknown":
+            try:
+                py_country = pycountry.countries.get(alpha_2=region)
+                if py_country:
+                    
+                    country_name = py_country.name
             except:
                 pass
-            await process_numbers(update, context, r_text, 1)
+
+       
+        if not country_name or country_name == "Unknown":
+            country_name = geocoder.description_for_number(parsed, "en")
+            
+        if not country_name or country_name == "Unknown":
+            country_name = region
+
+        flag = get_flag(region)
+        return country_name, flag, region
+    except Exception as e:
+        print(f"Error detecting country: {e}")
+        return "Unknown", "🌍", "UN"
+
+def format_otp_message(number, sms_text, service_name="[TG]", otp_code=None, user_id=None):
+    country_name, flag, region_code = detect_country_from_number(number, user_id)
+    masked = mask_number(number)
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    header = f"──────────────╖ \n↠ {flag} #{region_code} {service_name} {masked} ┨<tg-emoji emoji-id='6084757039567868626'>👆</tg-emoji>\n──────────────╛"
+    
+    body = f"<blockquote>{sms_text}</blockquote>"
+    time_footer = f"<blockquote>• <tg-emoji emoji-id='5413704112220949842'>⏰</tg-emoji> ~ {now_str}</blockquote>"
+    
+    return f"{header}\n{body}\n{time_footer}"
+
+
+def detect_service(text, source_addr=None):
+    if not text:
+        return "Unknown 🌐"
+    t = text.lower()
+    source_lower = source_addr.lower() if source_addr else ""
+    
+   
+    if any(k in t for k in ["whatsapp", "واتساب", "واتس"]):
+        return "<tg-emoji emoji-id='5188683998125106802'>📞</tg-emoji>"
+    if any(k in t for k in ["telegram", "تيليجرام", "تلجرام"]):
+        return "<tg-emoji emoji-id='5471949924658588235'>👉</tg-emoji>"
+    if any(k in t for k in ["facebook", "فيسبوك", "meta"]):
+        return "FB"
+    if any(k in t for k in ["instagram", "انستقرام", "انستا"]):
+        return "IG"
+    if any(k in t for k in ["tiktok", "تيك توك", "تيكتوك"]):
+        return "TK"
+    if any(k in t for k in ["google", "جوجل", "gmail"]):
+        return "GG"
+    if any(k in t for k in ["imo", "ايمو"]):
+        return "IM"
+    if any(k in t for k in ["viber", "فايبر"]):
+        return "VB"
+    if any(k in t for k in ["snapchat", "سناب"]):
+        return "SC"
+
+    services = {
+        "whatsapp": "<tg-emoji emoji-id='5188683998125106802'>📞</tg-emoji>",
+        "واتساب": "WS",
+        "واتس": "WS",
+        "facebook": "FB",
+        "فيسبوك": "FB",
+        "meta": "FB",
+        "instagram": "IG",
+        "انستقرام": "IG",
+        "انستا": "IG",
+        "telegram": "<tg-emoji emoji-id='5471949924658588235'>👉</tg-emoji>",
+        "تيليجرام": "<tg-emoji emoji-id='5471949924658588235'>👉</tg-emoji>",
+        "تلجرام": "<tg-emoji emoji-id='5471949924658588235'>👉</tg-emoji>",
+        "twitter": "TW",
+        "تويتر": "TW",
+        "x.com": "TW",
+        "snapchat": "SC",
+        "سناب": "SC",
+        "tiktok": "TK",
+        "تيك توك": "TK",
+        "google": "GG",
+        "جوجل": "GG",
+        "gmail": "GG",
+        "linkedin": "LN",
+        "لينكد": "LN",
+        "discord": "DC",
+        "ديسكورد": "DC",
+        "uber": "UB",
+        "bolt": "BT",
+        "careem": "CR",
+        "amazon": "AZ",
+        "netflix": "NF",
+        "spotify": "SP",
+        "apple": "AP",
+        "microsoft": "MS",
+        "paypal": "PP",
+        "binance": "BN",
+        "coinbase": "CB",
+    }
+
+    for keyword, service in services.items():
+        if keyword in t:
+            return service
+    
+    for keyword, service in services.items():
+        if keyword in source_lower:
+            return service
+
+    if source_addr and source_addr.strip():
+        cleaned_source = source_addr.replace('#', '').strip()
+        if cleaned_source:
+            return cleaned_source.upper()
+    return "Unknown 🌐"
+
+def get_country_flags(country_name):
+    
+    flags = {
+        "مصر": "<tg-emoji emoji-id='5976310790381115423'>🇪🇬</tg-emoji>", "Egypt": "<tg-emoji emoji-id='5976310790381115423'>🇪🇬</tg-emoji>",
+        "السعودية": "<tg-emoji emoji-id='5976726495970729818'>🇸🇦</tg-emoji>", "Saudi Arabia": "<tg-emoji emoji-id='5976726495970729818'>🇸🇦</tg-emoji>",
+        "ليبيا": "🇱🇾", "Libya": "🇱🇾",
+        "الجزائر": "🇩🇿", "Algeria": "🇩🇿",
+        "زيبمبابوي":"<tg-emoji emoji-id='5357255314099943456'>🇿🇼</tg-emoji>"," Zimbabwe": "<tg-emoji emoji-id='5357255314099943456'>🇿🇼</tg-emoji>", 
+        "المغرب": "🇲🇦", "Morocco": "🇲🇦",
+        "تونس": "🇹🇳", "Tunisia": "🇹🇳",
+        "العراق": "<tg-emoji emoji-id='5976458232313420307'>🇮🇶</tg-emoji>", "Iraq": "<tg-emoji emoji-id='5976458232313420307'>🇮🇶</tg-emoji>",
+        "الأردن": "🇯🇴", "Jordan": "🇯🇴",
+        "فينزويلا":"<tg-emoji emoji-id='5228751795274136090'>🇻🇪</tg-emoji>", "Venezuela": "<tg-emoji emoji-id='5228751795274136090'>🇻🇪</tg-emoji>" ,
+        "الإمارات": "🇦🇪", "UAE": "🇦🇪",
+        "الكويت": "🇰🇼", "Kuwait": "🇰🇼",
+        "قطر": "🇶??", "Qatar": "🇶🇦",
+        "لبنان": "🇱🇧", "Lebanon": "🇱🇧",
+        "سوريا": "🇸🇾", "Syria": "🇸🇾",
+        "روسيا": "🇷🇺", "Russia": "🇷🇺",
+        "أمريكا": "🇺🇸", "USA": "🇺🇸",
+        "فرنسا": "🇫🇷", "France": "🇫🇷",
+        "ألمانيا": "<tg-emoji emoji-id='5976493356555968244'>🇩🇪</tg-emoji>", "Germany": "<tg-emoji emoji-id='5976493356555968244'>🇩🇪</tg-emoji>",
+        "تركيا": "🇹🇷", "Turkey": "🇹🇷"
+    }
+    return flags.get(country_name, "🌍")
+
+def detect_country_code_from_file(file_path):
+   
+    try:
+        prefixes = {}
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+            
+        for line in lines:
+            line = line.strip()
+            if not line: continue
+            first_part = line.split()[0] if line.split() else line
+            digits = ''.join(c for c in first_part if c.isdigit())
+            
+            if len(digits) >= 8:
+               
+                for i in range(1, 4):
+                    prefix = digits[:i]
+                    prefixes[prefix] = prefixes.get(prefix, 0) + 1
+        
+        if not prefixes:
+            return None
+            
+        
+        sorted_prefixes = sorted(prefixes.items(), key=lambda x: (x[1], len(x[0])), reverse=True)
+        return sorted_prefixes[0][0] 
+    except Exception as e:
+        print(f"Error detecting country code: {e}")
+        return None
+
+def clean_and_filter_numbers(file_path, country_code):
+    
+    cleaned_numbers = []
+    total_lines = 0
+    rejected_lines = 0
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            total_lines += 1
+
+            parts = re.split(r'\s+', line)
+            if not parts:
+                rejected_lines += 1
+                continue
+
+            first_part = parts[0].strip()
+            digits = re.sub(r'\D', '', first_part)
+
+            if not digits:
+                rejected_lines += 1
+                continue
+
+            if digits.startswith(country_code):
+                cleaned_numbers.append(digits)
+            else:
+                rejected_lines += 1
+
+        with open(file_path, 'w', encoding='utf-8') as f:
+            for number in cleaned_numbers:
+                f.write(number + '\n')
+
+        return (len(cleaned_numbers), total_lines, rejected_lines)
+
+    except Exception as e:
+        print(f"❌ خطأ في تنظيف الملف: {e}")
+        return (0, 0, 0)
+
+def get_platform_buttons(country_name):
+   
+    markup = InlineKeyboardMarkup(row_width=2)
+    buttons_found = False
+    
+    
+    if country_name in COUNTRIES:
+        info = COUNTRIES[country_name]
+        platforms = info.get('platforms', [])
+        platform_icons = {
+            "Facebook": "📘 Facebook",
+            "WhatsApp": "💬 WhatsApp",
+            "Telegram": "✈️ Telegram",
+            "Instagram": "📸 Instagram",
+            "Twitter": "🐦 Twitter/X",
+            "TikTok": "📱 TikTok",
+            "Discord": "🎮 Discord",
+            "Gmail": "📧 Gmail"
+        }
+        for platform in platforms:
+            display_name = platform_icons.get(platform, f"📱 {platform}")
+            markup.add(InlineKeyboardButton(display_name, callback_data=f"platform_{country_name}_{platform}"))
+            buttons_found = True
+    else:
+        
+        platform_icons = {
+            "Facebook": "📘 Facebook",
+            "WhatsApp": "💬 WhatsApp",
+            "Telegram": "✈️ Telegram",
+            "Instagram": "📸 Instagram",
+            "Twitter": "🐦 Twitter/X",
+            "TikTok": "📱 TikTok",
+            "Discord": "🎮 Discord",
+            "Gmail": "📧 Gmail"
+        }
+        for cid, info in COUNTRIES.items():
+            if info.get("display_name") == country_name or cid == country_name:
+                platforms = info.get('platforms', [])
+                for platform in platforms:
+                    display_name = platform_icons.get(platform, f"📱 {platform}")
+                    markup.add(InlineKeyboardButton(display_name, callback_data=f"platform_{cid}_{platform}"))
+                    buttons_found = True
+
+    if not buttons_found:
+        return None
+    
+    markup.add(InlineKeyboardButton("𝗕𝗮𝗰𝗸", callback_data="choose_country", style="danger"))
+    return markup
+
+def get_platforms_list(user_id=None):
+    
+    platform_stats = {}
+    for country_id, info in COUNTRIES.items():
+        platforms = info.get("platforms", [])
+        count = info.get("numbers_count", 0)
+        
+        filename = info.get("file", "")
+        if count == 0 and filename and os.path.exists(filename):
+            try:
+                with open(filename, "r", encoding="utf-8") as f:
+                    count = sum(1 for line in f if line.strip())
+            except:
+                pass
+        
+        for p in platforms:
+            platform_stats[p] = platform_stats.get(p, 0) + count
+
+    platform_icons = {
+        "Facebook": "📘 Facebook",
+        "WhatsApp": "💬 WhatsApp",
+        "Telegram": "✈️ Telegram",
+        "Instagram": "📸 Instagram",
+        "Twitter": "🐦 Twitter/X",
+        "TikTok": "📱 TikTok",
+        "Discord": "🎮 Discord",
+        "Gmail": "📧 Gmail"
+    }
+
+    markup = InlineKeyboardMarkup(row_width=1)
+    for platform, count in platform_stats.items():
+        if count > 0:
+            display_name = platform_icons.get(platform, f"📱 {platform}")
+            markup.add(InlineKeyboardButton(f"{display_name} ({count})", callback_data=f"select_plt_{platform}"))
+    
+    return markup
+
+def get_countries_for_platform(platform, user_id=None):
+    
+    lang = get_user_language(user_id)
+    markup = InlineKeyboardMarkup(row_width=1)
+    buttons = []
+    
+    
+    display_name_counts = {}
+    
+    
+    total_counts = {}
+    for info in COUNTRIES.values():
+        if platform in info.get("platforms", []):
+            dname = info.get("display_name")
+            total_counts[dname] = total_counts.get(dname, 0) + 1
+
+    for cid, info in COUNTRIES.items():
+        if platform in info.get("platforms", []):
+            display_name = info.get("display_name", cid)
+            flag = info.get("flag", "🌍")
+            count = info.get("numbers_count", 0)
+            code = info.get("code", "")
+            
+            display_name_counts[display_name] = display_name_counts.get(display_name, 0) + 1
+            entry_number = display_name_counts[display_name]
+            
+            label = f"{flag} {display_name}"
+            
+            if total_counts.get(display_name, 0) > 1:
+                label += f" {entry_number}"
+            
+            if code:
+                label += f" (+{code})"
+
+            markup.add(InlineKeyboardButton(f"{label} ({count})", callback_data=f"country_{cid}"))
+    
+    markup.add(InlineKeyboardButton("🔙 Back" if lang != "ar" else "🔙 رجوع", callback_data="choose_country"))
+    return markup
+
+def get_countries_list(user_id=None):
+    
+    lang = get_user_language(user_id)
+    markup = InlineKeyboardMarkup(row_width=2)
+    found = False
+    
+    
+    display_name_counts = {}
+    total_counts = {}
+    for info in COUNTRIES.values():
+        dname = info.get("display_name")
+        total_counts[dname] = total_counts.get(dname, 0) + 1
+
+    for cid, info in COUNTRIES.items():
+        display_name = info.get("display_name", cid)
+        flag = info.get("flag", "🌍")
+        code = info.get("code", "??")
+        count = info.get("numbers_count", 0)
+        
+        display_name_counts[display_name] = display_name_counts.get(display_name, 0) + 1
+        entry_number = display_name_counts[display_name]
+        
+        label = f"{flag} {display_name}"
+        if total_counts.get(display_name, 0) > 1:
+            label += f" {entry_number}"
+            
+        markup.add(InlineKeyboardButton(f"{label} (+{code}) ({count})", callback_data=f"country_{cid}"))
+        found = True
+    
+    markup.add(InlineKeyboardButton("🔙 Back" if lang != "ar" else "🔙 رجوع", callback_data="choose_country"))
+    return markup if found else None
+
+def get_country_buttons(user_id=None):
+    return get_platforms_list(user_id)
+
+def get_random_number(country_name):
+    if country_name not in COUNTRIES:
+        return None
+
+    filename = COUNTRIES[country_name]["file"]
+
+    if not os.path.exists(filename):
+        return None
+
+    with open(filename, "r", encoding="utf-8") as f:
+        numbers = [line.strip() for line in f if line.strip()]
+
+    if not numbers:
+        return None
+
+    return random.choice(numbers)
+
+def create_message_buttons(user_id=None):
+    user_id = user_id or telebot.types.User(0, False, "Dummy").id
+    lang = get_user_language(user_id)
+    links = load_button_links()
+    markup = InlineKeyboardMarkup(row_width=1)
+    
+    change_number_text = "🔄 تغيير الرقم" if lang == "ar" else "🔄 Change Number"
+    change_country_text = "🌍 تغيير الدولة" if lang == "ar" else "🌍 Change Country"
+    group_link_text = "📢 جروب البوت" if lang == "ar" else "📢 Group Link"
+    back_text = "🔙 القائمة الرئيسية" if lang == "ar" else "🔙 Back to Main"
+    
+    markup.add(InlineKeyboardButton(change_number_text, callback_data="change_number"))
+    markup.add(InlineKeyboardButton(change_country_text, callback_data="choose_country"))
+    markup.add(InlineKeyboardButton(group_link_text, url=links.get("group_link", "https://t.me/alorhawa")))
+    markup.add(InlineKeyboardButton(back_text, callback_data="back_to_main"))
+    
+    return markup
+
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+def create_group_otp_keyboard(otp_code=None):
+    otp_buttons = load_otp_buttons()  # افترض إن دي وظيفة بترجع قائمة أزرار
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    
+    # ────────────── إعداد الإيموجي ──────────────
+    OTP_EMOJI_ID = "5454386656628991407"       # إيموجي لزر OTP
+    DEFAULT_EMOJI_LEFT = "5974337549261347177" # زر أول في الصف
+    DEFAULT_EMOJI_RIGHT = "5368324170671202286"# زر ثاني في الصف
+    
+    # ────────────── زر الـ OTP ──────────────
+    if otp_code and otp_code != "N/A":
+        try:
+            markup.add(
+                InlineKeyboardButton(
+                    text=f"🔑 {otp_code}",
+                    callback_data=f"copy_{otp_code}"
+                )
+            )
+        except Exception as e:
+            print(f"خطأ في إنشاء زر OTP: {e}")
+            markup.add(
+                InlineKeyboardButton(
+                    text=f"🔑 {otp_code}",
+                    callback_data=f"copy_{otp_code}"
+                )
+            )
+    
+    # ────────────── الأزرار التانية (otp_buttons) ──────────────
+    if otp_buttons:
+        row_buttons = []
+        button_index = 0
+        
+        for btn in otp_buttons:
+            emoji_id = btn.get("emoji_id")
+            
+            if not emoji_id:
+                # وزّع الافتراضيين حسب الترتيب
+                emoji_id = DEFAULT_EMOJI_LEFT if button_index % 2 == 0 else DEFAULT_EMOJI_RIGHT
+            
+            try:
+                # تلوين الأزرار: زر أول أزرق، زر ثاني أخضر
+                btn_style = "primary" if button_index % 2 == 0 else "primary"
+                
+                button = InlineKeyboardButton(
+                    text=f" {btn['name']}",
+                    url=btn["url"],
+                    icon_custom_emoji_id=emoji_id,
+                    style=btn_style
+                )
+                row_buttons.append(button)
+            except Exception as e:
+                print(f"خطأ في custom emoji لزر {btn['name']}: {e}")
+                row_buttons.append(
+                    InlineKeyboardButton(
+                        text=btn["name"],
+                        url=btn["url"]
+                    )
+                )
+            
+            button_index += 1
+        
+        # ترتيب كل صف 2 أزرار
+        for i in range(0, len(row_buttons), 2):
+            chunk = row_buttons[i:i+2]
+            markup.add(*chunk)
+    
+    # ────────────── الزر الرابع (سطر لوحده) ──────────────
+    FOURTH_BUTTON_TEXT = "𝗗𝗘𝗩𝗘𝗟𝗢𝗣𝗘𝗥"
+    FOURTH_BUTTON_URL = "https://t.me/alorhawa"
+    FOURTH_EMOJI_ID = "5203916679460953989"
+    
+    markup.add(
+        InlineKeyboardButton(
+            text=f" {FOURTH_BUTTON_TEXT}",
+            url=FOURTH_BUTTON_URL,
+            icon_custom_emoji_id=FOURTH_EMOJI_ID,
+            style="danger"   # اللون الأحمر
+        )
+    )
+    
+    return markup if (otp_code or otp_buttons) else None
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("copy_"))
+def handle_copy_callback(call):
+    otp = call.data.split("_", 1)[1]
+    
+    bot.answer_callback_query(call.id, f"{otp}", show_alert=True)
+
+def create_otp_message_keyboard(otp_code):
+    global OTP_BUTTONS
+    OTP_BUTTONS = load_otp_buttons()
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    
+    
+    for btn in OTP_BUTTONS:
+        markup.add(InlineKeyboardButton(btn["name"], url=btn["url"]))
+    
+    
+    markup.add(InlineKeyboardButton("📋 Copy OTP", callback_data=f"copy_otp_{otp_code}"))
+    
+    return markup
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("copy_otp_"))
+def copy_otp_callback(call):
+    otp_code = call.data.replace("copy_otp_", "")
+    bot.answer_callback_query(call.id, f"✅ Code: {otp_code}\n(Long press to copy if your client supports it)", show_alert=True)
+
+def auto_delete_message(chat_id, message_id, delay=300):
+    def delete():
+        time.sleep(delay)
+        try: bot.delete_message(chat_id, message_id)
+        except: pass
+    threading.Thread(target=delete, daemon=True).start()
+
+def safe_send_message(chat_id, text, **kwargs):
+    msg = bot.send_message(chat_id, text, **kwargs)
+    if isinstance(chat_id, (int, str)) and (int(chat_id) < 0 or str(chat_id).startswith("-100")):
+        auto_delete_message(int(chat_id), msg.message_id)
+    return msg
+
+
+original_send = bot.send_message
+def hooked_send(chat_id, *args, **kwargs):
+    msg = original_send(chat_id, *args, **kwargs)
+    if isinstance(chat_id, (int, str)) and (int(chat_id) < 0 or str(chat_id).startswith("-100")):
+        auto_delete_message(int(chat_id), msg.message_id)
+    return msg
+bot.send_message = hooked_send
+
+def format_otp_message(country_name, country_flag, service_detected, number, otp, message_text, server_key="GROUP", is_group=False, show_full_number=True, user_id=None):
+    
+    use_shorthand = is_group or (OTP_GROUP and str(user_id) == str(OTP_GROUP))
+    
+    service_upper = str(service_detected).upper()
+    shorthand = service_upper
+    
+    if use_shorthand:
+        SHORTHANDS = {
+            "WHATSAPP": "<tg-emoji emoji-id='5188683998125106802'>📞</tg-emoji>",
+            "TELEGRAM": "<tg-emoji emoji-id='5471949924658588235'>👉</tg-emoji>",
+            "FACEBOOK": "FB",
+            "INSTAGRAM": "IG",
+            "TIKTOK": "TK",
+            "TWITTER": "TW",
+            "GOOGLE": "GG",
+            "MICROSOFT": "MS",
+            "NETFLIX": "NF",
+            "STEAM": "ST",
+            "SNAPCHAT": "SC",
+            "VIBER": "VB",
+            "IMO": "IM",
+            "WECHAT": "WC",
+            "LINE": "LN",
+            "DISCORD": "DC",
+            "PAYPAL": "PP",
+            "AMAZON": "AZ",
+            "EBAY": "EB",
+            "APPLE": "AP"
+        }
+
+        
+        found = False
+        for key, val in SHORTHANDS.items():
+            if key in service_upper:
+                shorthand = val
+                found = True
+                break
+                
+        if not found:
+        
+            shorthand = service_upper[:2] if len(service_upper) > 2 else service_upper
+            
+    service_name = f"[{shorthand}]"
+    formatted = format_otp_message_v2(number, message_text, service_name, otp)
+    
+    if OTP_GROUP:
+        try:
+            
+            if not use_shorthand:
+               
+                group_shorthand = service_upper
+                SHORTHANDS = {"WHATSAPP": "<tg-emoji emoji-id='5188683998125106802'>📞</tg-emoji>", "TELEGRAM": "<tg-emoji emoji-id='5471949924658588235'>👉</tg-emoji>", "FACEBOOK": "FB", "INSTAGRAM": "IG", "TIKTOK": "TK", "TWITTER": "TW"}
+                for key, val in SHORTHANDS.items():
+                    if key in service_upper:
+                        group_shorthand = val
+                        break
+                if group_shorthand == service_upper: 
+                    group_shorthand = service_upper[:2]
+                
+                group_service_name = f"[{group_shorthand}]"
+                group_formatted = format_otp_message_v2(number, message_text, group_service_name, otp, is_group=True)
+            else:
+                group_formatted = formatted
+            
+            msg = original_send(OTP_GROUP, group_formatted, parse_mode="HTML", reply_markup=create_group_otp_keyboard(otp))
+            auto_delete_message(OTP_GROUP, msg.message_id)
+        except: pass
+    return formatted
+
+def format_otp_message_v2(number, sms_text, service_name="[TG]", otp_code=None, is_group=False):
+    country_name, flag, region_code = detect_country_from_number(number)
+    masked = mask_number(number)
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    display_service = service_name
+    if is_group:
+        service_clean = str(service_name).replace("[", "").replace("]", "").upper()
+        SHORTHANDS = {
+            "WHATSAPP": "<tg-emoji emoji-id='5188683998125106802'>📞</tg-emoji>", "TELEGRAM": "TG", "FACEBOOK": "FB", "INSTAGRAM": "IG", 
+            "TIKTOK": "TK", "TWITTER": "TW", "GOOGLE": "GG", "MICROSOFT": "MS"
+        }
+        found_sh = service_clean
+        for k, v in SHORTHANDS.items():
+            if k in service_clean:
+                found_sh = v
+                break
+        if found_sh == service_clean and len(found_sh) > 3:
+            found_sh = found_sh[:2]
+        display_service = f"[{found_sh}]"
+    
+    otp_display = ""
+    if otp_code:
+        otp_display = "" 
+
+    line_content = f"↠ {flag} #{region_code} {display_service} {masked} ┨<tg-emoji emoji-id='6084757039567868626'>👆</tg-emoji>"
+   
+    top_bottom_line = "──────────────"
+    
+    header = f"{top_bottom_line}╖ \n{line_content}\n{top_bottom_line}╛"
+    
+    body = f"<blockquote><tg-emoji emoji-id='5971844011508372946'>☠</tg-emoji>{sms_text}</blockquote>"
+    time_footer = f"<blockquote>• <tg-emoji emoji-id='5413704112220949842'>⏰</tg-emoji> ~ {now_str}</blockquote>"
+    
+    return f"{header}\n{otp_display}\n{body}\n{time_footer}"
+
+@bot.message_handler(commands=["start"])
+def start(msg):
+    user_id = msg.from_user.id
+
+    if is_banned(user_id):
+        bot.reply_to(msg, t(user_id, "banned"))
         return
 
-    # WITHDRAW
-    if data == "withdraw_start":
-        balance = get_user(uid)['balance']
-        min_withdraw = get_min_withdraw()
-        if balance < min_withdraw:
-            await query.message.reply_text(
-                pe(f"<blockquote>💵 BALANCE: {format_balance(balance)} BDT\n📉 MIN WITHDRAW: {min_withdraw:.2f} BDT</blockquote>"),
+    if msg.chat.type == "private":
+        referrer_id = None
+        if msg.text and len(msg.text.split()) > 1:
+            param = msg.text.split()[1]
+            if param.startswith("ref_"):
+                try:
+                    referrer_id = int(param.replace("ref_", ""))
+                    if referrer_id == user_id:
+                        referrer_id = None
+                except:
+                    referrer_id = None
+        
+        is_new_user = str(user_id) not in USERS
+        
+        if is_new_user or "language" not in USERS.get(str(user_id), {}):
+            if is_new_user and referrer_id:
+                USERS[str(user_id)] = {
+                    "selected_country": None, 
+                    "selected_number": None, 
+                    "join_date": datetime.now().strftime('%Y-%m-%d'),
+                    "activations": 0,
+                    "pending_referrer": referrer_id
+                }
+                save_users()
+            
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                InlineKeyboardButton("🇸🇦 العربية", callback_data="set_lang_ar", style="success"),
+                InlineKeyboardButton("🇬🇧 English", callback_data="set_lang_en", style="primary")
+            )
+            bot.send_message(
+                msg.chat.id,
+                "🌍 <b>اختر اللغة / Choose Language</b>",
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+            return
+        
+        if not check_subscription(user_id):
+            bot.send_message(
+                msg.chat.id,
+                get_subscription_message(user_id),
+                parse_mode="HTML",
+                reply_markup=get_full_subscription_keyboard(user_id)
+            )
+            return
+
+        if str(user_id) not in USERS:
+            USERS[str(user_id)] = {"selected_country": None, "selected_number": None, "language": "ar", "join_date": datetime.now().strftime('%Y-%m-%d'), "activations": 0}
+            save_users()
+        
+        if referrer_id and is_new_user:
+            process_referral(user_id, referrer_id)
+            lang = get_user_language(user_id)
+            try:
+                bot.send_message(user_id, t(user_id, "referral_success"))
+            except:
+                pass
+
+        if is_admin(user_id):
+            admin_markup = get_admin_menu()
+            bot.send_message(
+                msg.chat.id,
+                "🎛 <b>لوحة الإدارة</b>\n\nاختر الإجراء المطلوب:",
+                parse_mode="HTML",
+                reply_markup=admin_markup
+            )
+            return
+        
+        lang = get_user_language(user_id)
+        settings = load_referral_settings()
+        code_bonus = settings.get("code_bonus", 0.01)
+        
+        markup = get_platforms_list(user_id)
+        if markup:
+            if lang == "ar":
+                title = f"<tg-emoji emoji-id='5972277098830634724'>🚨</tg-emoji> <b>اختر المنصة</b>\n\n<tg-emoji emoji-id='6046356449938905522'>💰</tg-emoji> ستربح <b>${format_decimal(code_bonus)}</b> عند كل كود تستلمه!"
+            else:
+                title = f"<tg-emoji emoji-id='5972277098830634724'>🚨</tg-emoji> <b>Select Platform</b>\n\n<tg-emoji emoji-id='6046356449938905522'>💰</tg-emoji> You'll earn <b>${format_decimal(code_bonus)}</b> for each code received!"
+            
+            bot.send_message(
+                msg.chat.id,
+                title,
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+        else:
+            text = t(user_id, "welcome")
+            if not text: text = "🌐 <b>مرحباً بك!</b>"
+            bot.send_message(
+                msg.chat.id,
+                text,
+                parse_mode="HTML",
+                reply_markup=get_main_menu_lang(user_id)
+            )
+    else:
+        if is_admin(user_id):
+            bot.send_message(
+                msg.chat.id,
+                t(user_id, "group_hello_admin"),
+                parse_mode="HTML"
+            )
+        else:
+            bot.send_message(
+                msg.chat.id,
+                t(user_id, "group_hello"),
+                parse_mode="HTML"
+            )
+
+@bot.message_handler(commands=["getnumber"])
+def getnumber_command(msg):
+    user_id = msg.from_user.id
+    
+    if is_banned(user_id):
+        bot.reply_to(msg, t(user_id, "banned"))
+        return
+    
+    if msg.chat.type != "private":
+        return
+    
+    if not check_subscription(user_id):
+        unjoined_channel = get_first_unjoined_channel(user_id)
+        if unjoined_channel:
+            bot.send_message(
+                msg.chat.id,
+                get_subscription_message_for_channel(unjoined_channel, user_id),
+                parse_mode="HTML",
+                reply_markup=get_single_channel_keyboard(unjoined_channel, user_id)
+            )
+        return
+    
+    lang = get_user_language(user_id)
+    settings = load_referral_settings()
+    code_bonus = settings.get("code_bonus", 0.01)
+    
+    markup = get_country_buttons(user_id)
+    if markup:
+        if lang == "ar":
+            title = f"<tg-emoji emoji-id='5972277098830634724'>🚨</tg-emoji> <b>اختر المنصة</b>\n\n<tg-emoji emoji-id='6046356449938905522'>💰</tg-emoji> ستربح <b>${format_decimal(code_bonus)}</b> عند كل كود تستلمه!"
+        else:
+            title = f"<tg-emoji emoji-id='5972277098830634724'>🚨</tg-emoji> <b>Select Country</b>\n\n💰 You'll earn <b>${format_decimal(code_bonus)}</b> for each code received!"
+        
+        bot.send_message(msg.chat.id, title, parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(commands=["account"])
+def account_command(msg):
+    user_id = msg.from_user.id
+    
+    if is_banned(user_id):
+        bot.reply_to(msg, t(user_id, "banned"))
+        return
+    
+    if msg.chat.type != "private":
+        return
+    
+    if not check_subscription(user_id):
+        unjoined_channel = get_first_unjoined_channel(user_id)
+        if unjoined_channel:
+            bot.send_message(
+                msg.chat.id,
+                get_subscription_message_for_channel(unjoined_channel, user_id),
+                parse_mode="HTML",
+                reply_markup=get_single_channel_keyboard(unjoined_channel, user_id)
+            )
+        return
+    
+    user_data = USERS.get(str(user_id), {})
+    activations = user_data.get("activations", 0)
+    join_date = user_data.get("join_date", datetime.now().strftime('%Y-%m-%d'))
+    lang = get_user_language(user_id)
+    
+    referral_data = get_user_referral_data(user_id)
+    balance = referral_data.get("balance", 0.0)
+    total_earned = referral_data.get("total_earned", 0.0)
+    referrals_count = len(referral_data.get("referrals", []))
+    active_referrals = referral_data.get("active_referrals", 0)
+    
+    selected_country = user_data.get("selected_country")
+    selected_number = user_data.get("selected_number")
+    
+    if selected_number and selected_country:
+        number_status = f"✅ رقم نشط لـ {selected_country}" if lang == "ar" else f"✅ Active number for {selected_country}"
+    else:
+        number_status = "❌ لا يوجد رقم حالياً" if lang == "ar" else "❌ No number currently"
+    
+    bot_info = bot.get_me()
+    referral_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+    
+    if lang == "ar":
+        account_text = (
+            f"👤 <b>معلومات حسابك:</b>\n\n"
+            f"🆔 <b>معرفك:</b> <code>{user_id}</code>\n"
+            f"📅 <b>تاريخ الانضمام:</b> {join_date}\n"
+            f"📊 <b>الأكواد المستلمة:</b> {activations}\n"
+            f"🌐 <b>اللغة:</b> العربية\n\n"
+            f"💰 <b>معلومات الأرباح:</b>\n"
+            f"├ 💵 الرصيد الحالي: <b>${format_decimal(balance)}</b>\n"
+            f"├ 📈 إجمالي الأرباح: <b>${format_decimal(total_earned)}</b>\n"
+            f"├ 👥 عدد الإحالات: <b>{referrals_count}</b>\n"
+            f"└ ✅ إحالات نشطة: <b>{active_referrals}</b>\n\n"
+            f"🔗 <b>رابط الإحالة:</b>\n<code>{referral_link}</code>\n\n"
+            f"💡 <b>حالة رقمك:</b>\n{number_status}"
+        )
+    else:
+        account_text = (
+            f"👤 <b>Your Account Info:</b>\n\n"
+            f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
+            f"📅 <b>Join Date:</b> {join_date}\n"
+            f"📊 <b>Codes Received:</b> {activations}\n"
+            f"🌐 <b>Language:</b> English\n\n"
+            f"💰 <b>Earnings Info:</b>\n"
+            f"├ 💵 Current Balance: <b>${format_decimal(balance)}</b>\n"
+            f"├ 📈 Total Earned: <b>${format_decimal(total_earned)}</b>\n"
+            f"├ 👥 Total Referrals: <b>{referrals_count}</b>\n"
+            f"└ ✅ Active Referrals: <b>{active_referrals}</b>\n\n"
+            f"🔗 <b>Referral Link:</b>\n<code>{referral_link}</code>\n\n"
+            f"💡 <b>Number Status:</b>\n{number_status}"
+        )
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    if balance >= load_referral_settings().get("min_withdrawal", 5.0):
+        withdraw_text = "💰 سحب الرصيد" if lang == "ar" else "💰 Withdraw"
+        markup.add(InlineKeyboardButton(withdraw_text, callback_data="withdraw_balance"))
+    
+    back_text = "🔙 رجوع" if lang == "ar" else "🔙 Back"
+    markup.add(InlineKeyboardButton(back_text, callback_data="back_to_main"))
+    
+    bot.send_message(msg.chat.id, account_text, parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(commands=["help"])
+def help_command(msg):
+    user_id = msg.from_user.id
+    
+    if is_banned(user_id):
+        bot.reply_to(msg, t(user_id, "banned"))
+        return
+    
+    if msg.chat.type != "private":
+        return
+    
+    lang = get_user_language(user_id)
+    settings = load_referral_settings()
+    code_bonus = settings.get("code_bonus", 0.01)
+    referral_bonus = settings.get("referral_bonus", 0.50)
+    codes_required = settings.get("codes_required_for_referral", 3)
+    min_withdrawal = settings.get("min_withdrawal", 5.0)
+    
+    if lang == 'ar':
+        instructions_text = f"""📖 <b>دليل استخدام البوت</b>
+
+━━━━━━ <b>📱 استلام الأكواد</b> ━━━━━━
+
+1️⃣ <b>اختيار الدولة:</b>
+   • اضغط على "Get Number"
+   • اختر الدولة التي تريدها
+
+2️⃣ <b>اختيار الرقم:</b>
+   • ستظهر لك الأرقام المتاحة
+   • اختر الرقم المناسب
+
+3️⃣ <b>استلام الكود:</b>
+   • استخدم الرقم للتسجيل في أي موقع/تطبيق
+   • سيصلك الكود تلقائياً هنا في البوت
+
+━━━━━━ <b>💰 نظام الأرباح</b> ━━━━━━
+
+💎 <b>بونص الكود:</b>
+   • تحصل على <b>${format_decimal(code_bonus)}</b> عن كل كود تستلمه
+
+👥 <b>بونص الإحالة:</b>
+   • شارك رابط الإحالة مع أصدقائك
+   • عندما يستلم صديقك <b>{codes_required} أكواد</b>
+   • تحصل على <b>${format_decimal(referral_bonus)}</b> مباشرة!
+
+━━━━━━ <b>💵 السحب</b> ━━━━━━
+
+💰 <b>الحد الأدنى:</b> ${format_decimal(min_withdrawal)}
+📝 <b>طرق السحب:</b>
+   • فودافون كاش
+   • USDT (TRC20/BEP20)
+   • Binance ID
+
+━━━━━━ شكراً لثقتك ━━━━━━
+
+🆘 للمساعدة تواصل مع المطور"""
+    else:
+        instructions_text = f"""📖 <b>Bot Guide</b>
+
+━━━━━━ <b>📱 Receiving Codes</b> ━━━━━━
+
+1️⃣ <b>Choose Country:</b>
+   • Click on "Get Number"
+   • Select your desired country
+
+2️⃣ <b>Choose Number:</b>
+   • Available numbers will appear
+   • Select the number you want
+
+3️⃣ <b>Receive Code:</b>
+   • Use the number to register on any site/app
+   • The code will arrive automatically here in the bot
+
+━━━━━━ <b>💰 Earning System</b> ━━━━━━
+
+💎 <b>Code Bonus:</b>
+   • Earn <b>${format_decimal(code_bonus)}</b> for each code you receive
+
+👥 <b>Referral Bonus:</b>
+   • Share your referral link with friends
+   • When your friend receives <b>{codes_required} codes</b>
+   • You get <b>${format_decimal(referral_bonus)}</b> instantly!
+
+━━━━━━ <b>💵 Withdrawal</b> ━━━━━━
+
+💰 <b>Minimum:</b> ${format_decimal(min_withdrawal)}
+📝 <b>Withdrawal Methods:</b>
+   • Vodafone Cash
+   • USDT (TRC20/BEP20)
+   • Binance ID
+
+━━━━━━ Thanks for your trust ━━━━━━
+
+🆘 For help, contact the developer"""
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    developer_btn_text = "🆘 Contact eloper" if lang == "en" else "🆘 تواصل مع المطور"
+    markup.add(InlineKeyboardButton(developer_btn_text, url="https://t.me/alorhawa"))
+    markup.add(InlineKeyboardButton(t(user_id, "back"), callback_data="back_to_main_user"))
+    
+    bot.send_message(msg.chat.id, instructions_text, parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(commands=["withdraw"])
+def withdraw_command(msg):
+    user_id = msg.from_user.id
+    
+    if is_banned(user_id):
+        bot.reply_to(msg, t(user_id, "banned"))
+        return
+    
+    if msg.chat.type != "private":
+        return
+    
+    if not check_subscription(user_id):
+        unjoined_channel = get_first_unjoined_channel(user_id)
+        if unjoined_channel:
+            bot.send_message(
+                msg.chat.id,
+                get_subscription_message_for_channel(unjoined_channel, user_id),
+                parse_mode="HTML",
+                reply_markup=get_single_channel_keyboard(unjoined_channel, user_id)
+            )
+        return
+    
+    lang = get_user_language(user_id)
+    referral_data = get_user_referral_data(user_id)
+    balance = referral_data.get("balance", 0.0)
+    settings = load_referral_settings()
+    min_withdrawal = settings.get("min_withdrawal", 5.0)
+    
+    if balance < min_withdrawal:
+        if lang == "ar":
+            msg_text = f"❌ رصيدك (${format_decimal(balance)}) أقل من الحد الأدنى للسحب (${format_decimal(min_withdrawal)})"
+        else:
+            msg_text = f"❌ Your balance (${format_decimal(balance)}) is below minimum withdrawal (${format_decimal(min_withdrawal)})"
+        bot.send_message(msg.chat.id, msg_text, parse_mode="HTML")
+        return
+    
+    user_states[user_id] = {"action": "withdraw_method"}
+    
+    methods = load_withdrawal_methods()
+    markup = InlineKeyboardMarkup(row_width=2)
+    
+    method_icons = {"vodafone": "💳", "usdt_trc20": "📱", "usdt_bep20": "🔗", "binance_id": "🅱️"}
+    
+    for method_key, method_data in methods.items():
+        if method_data.get("enabled", True):
+            name = method_data.get(f"name_{lang}", method_data.get("name_en", method_key))
+            icon = method_icons.get(method_key, "💰")
+            markup.add(InlineKeyboardButton(f"{icon} {name}", callback_data=f"wd_method_{method_key}"))
+    
+    back_text = "🔙 رجوع" if lang == "ar" else "🔙 Back"
+    markup.add(InlineKeyboardButton(back_text, callback_data="my_account"))
+    
+    if lang == "ar":
+        text = f"💰 <b>سحب الرصيد</b>\n\n💵 رصيدك الحالي: <b>${format_decimal(balance)}</b>\n\nاختر طريقة السحب:"
+    else:
+        text = f"💰 <b>Withdraw Balance</b>\n\n💵 Your balance: <b>${format_decimal(balance)}</b>\n\nChoose withdrawal method:"
+    
+    bot.send_message(msg.chat.id, text, parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(commands=["hom"])
+def hom_command(msg):
+    user_id = msg.from_user.id
+    
+    if is_banned(user_id):
+        bot.reply_to(msg, t(user_id, "banned"))
+        return
+    
+    if msg.chat.type != "private":
+        return
+    
+    text = t(user_id, "welcome")
+    if not text: text = "🌐 <b>مرحباً بك!</b>"
+    bot.send_message(
+        msg.chat.id,
+        text,
+        parse_mode="HTML",
+        reply_markup=get_main_menu_lang(user_id)
+    )
+
+@bot.message_handler(commands=["language"])
+def language_command(msg):
+    user_id = msg.from_user.id
+    
+    if is_banned(user_id):
+        bot.reply_to(msg, t(user_id, "banned"))
+        return
+    
+    if msg.chat.type != "private":
+        return
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🇸🇦 العربية", callback_data="set_lang_ar", style="success"),
+        InlineKeyboardButton("🇬🇧 English", callback_data="set_lang_en", style="primary")
+    )
+    
+    bot.send_message(
+        msg.chat.id,
+        "🌍 <b>Choose Language / اختر اللغة</b>",
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.message_handler(commands=["bonus"])
+def bonus_command(msg):
+    user_id = msg.from_user.id
+    
+    if is_banned(user_id):
+        bot.reply_to(msg, t(user_id, "banned"))
+        return
+    
+    if msg.chat.type != "private":
+        return
+    
+    lang = get_user_language(user_id)
+    settings = load_referral_settings()
+    code_bonus = settings.get("code_bonus", 0.01)
+    referral_bonus = settings.get("referral_bonus", 0.50)
+    codes_required = settings.get("codes_required_for_referral", 3)
+    min_withdrawal = settings.get("min_withdrawal", 5.0)
+    
+    referral_data = get_user_referral_data(user_id)
+    balance = referral_data.get("balance", 0.0)
+    total_earned = referral_data.get("total_earned", 0.0)
+    referrals_count = len(referral_data.get("referrals", []))
+    active_referrals = referral_data.get("active_referrals", 0)
+    
+    bot_info = bot.get_me()
+    referral_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+    
+    if lang == "ar":
+        bonus_text = f"""💰 <b>نظام البونص</b>
+
+━━━━━━ <b>📊 إحصائياتك</b> ━━━━━━
+
+💵 الرصيد الحالي: <b>${format_decimal(balance)}</b>
+📈 إجمالي الأرباح: <b>${format_decimal(total_earned)}</b>
+👥 عدد الإحالات: <b>{referrals_count}</b>
+✅ إحالات نشطة: <b>{active_referrals}</b>
+
+━━━━━━ <b>🎁 معدلات البونص</b> ━━━━━━
+
+💎 بونص الكود: <b>${format_decimal(code_bonus)}</b> لكل كود
+👥 بونص الإحالة: <b>${format_decimal(referral_bonus)}</b> عند {codes_required} أكواد
+💰 الحد الأدنى للسحب: <b>${format_decimal(min_withdrawal)}</b>
+
+━━━━━━ <b>🔗 رابط الإحالة</b> ━━━━━━
+
+<code>{referral_link}</code>
+
+شارك الرابط مع أصدقائك للحصول على بونص!"""
+    else:
+        bonus_text = f"""💰 <b>Bonus System</b>
+
+━━━━━━ <b>📊 Your Stats</b> ━━━━━━
+
+💵 Current Balance: <b>${format_decimal(balance)}</b>
+📈 Total Earned: <b>${format_decimal(total_earned)}</b>
+👥 Total Referrals: <b>{referrals_count}</b>
+✅ Active Referrals: <b>{active_referrals}</b>
+
+━━━━━━ <b>🎁 Bonus Rates</b> ━━━━━━
+
+💎 Code Bonus: <b>${format_decimal(code_bonus)}</b> per code
+👥 Referral Bonus: <b>${format_decimal(referral_bonus)}</b> after {codes_required} codes
+💰 Min Withdrawal: <b>${format_decimal(min_withdrawal)}</b>
+
+━━━━━━ <b>🔗 Referral Link</b> ━━━━━━
+
+<code>{referral_link}</code>
+
+Share this link with friends to earn bonus!"""
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    share_text = "📤 Share Link" if lang == "en" else "📤 مشاركة الرابط"
+    share_url = f"https://t.me/share/url?url={referral_link}"
+    markup.add(InlineKeyboardButton(share_text, url=share_url))
+    
+    bot.send_message(msg.chat.id, bonus_text, parse_mode="HTML", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("set_lang_"))
+def set_language_callback(call):
+    user_id = call.from_user.id
+    lang = call.data.replace("set_lang_", "")
+    
+    set_user_language(user_id, lang)
+    
+    pending_referrer = None
+    if str(user_id) not in USERS:
+        USERS[str(user_id)] = {"selected_country": None, "selected_number": None, "language": lang, "activations": 0, "join_date": datetime.now().strftime('%Y-%m-%d')}
+    else:
+        pending_referrer = USERS[str(user_id)].get("pending_referrer")
+        USERS[str(user_id)]["language"] = lang
+        if "activations" not in USERS[str(user_id)]:
+            USERS[str(user_id)]["activations"] = 0
+        if "join_date" not in USERS[str(user_id)]:
+            USERS[str(user_id)]["join_date"] = datetime.now().strftime('%Y-%m-%d')
+        if pending_referrer:
+            del USERS[str(user_id)]["pending_referrer"]
+    save_users()
+    
+    if pending_referrer:
+        if process_referral(user_id, pending_referrer):
+            try:
+                referrer_lang = get_user_language(pending_referrer)
+                settings = load_referral_settings()
+                referral_bonus = settings.get("referral_bonus", 0.50)
+                codes_required = settings.get("codes_required_for_referral", 3)
+                
+                user_name = call.from_user.first_name or "مستخدم"
+                
+                if referrer_lang == "ar":
+                    notify_msg = (
+                        f"🎉 <b>إحالة جديدة!</b>\n\n"
+                        f"👤 المستخدم: <b>{user_name}</b>\n"
+                        f"🆔 ID: <code>{user_id}</code>\n\n"
+                        f"💰 <b>الربح المتوقع:</b> ${referral_bonus:.2f}\n"
+                        f"📊 عند وصول {codes_required} أكواد ستصبح الإحالة نشطة!"
+                    )
+                else:
+                    notify_msg = (
+                        f"🎉 <b>New Referral!</b>\n\n"
+                        f"👤 User: <b>{user_name}</b>\n"
+                        f"🆔 ID: <code>{user_id}</code>\n\n"
+                        f"💰 <b>Expected Profit:</b> ${referral_bonus:.2f}\n"
+                        f"📊 Referral becomes active after {codes_required} codes!"
+                    )
+                bot.send_message(pending_referrer, notify_msg, parse_mode="HTML")
+            except Exception as e:
+                print(f"Error sending referral notification: {e}")
+            try:
+                bot.send_message(user_id, t(user_id, "referral_success"), parse_mode="HTML")
+            except:
+                pass
+    
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    
+    if not check_subscription(user_id):
+        unjoined_channel = get_first_unjoined_channel(user_id)
+        if unjoined_channel:
+            bot.send_message(
+                call.message.chat.id,
+                get_subscription_message(unjoined_channel, user_id),
+                parse_mode="HTML",
+                reply_markup=get_single_channel_keyboard(unjoined_channel)
+            )
+        return
+    
+    if is_admin(user_id):
+        admin_markup = get_admin_menu()
+        bot.send_message(
+            call.message.chat.id,
+            "🎛 <b>لوحة الإدارة</b>\n\nاختر الإجراء المطلوب:",
+            parse_mode="HTML",
+            reply_markup=admin_markup
+        )
+    
+    settings = load_referral_settings()
+    code_bonus = settings.get("code_bonus", 0.01)
+    
+    markup = get_country_buttons(user_id)
+    if markup:
+        if lang == "ar":
+            title = f"<tg-emoji emoji-id='5972277098830634724'>🚨</tg-emoji> <b>اختر المنصة</b>\n\n<tg-emoji emoji-id='6046356449938905522'>💰</tg-emoji> ستربح <b>${format_decimal(code_bonus)}</b> عند كل كود تستلمه!"
+        else:
+            title = f"<tg-emoji emoji-id='5972277098830634724'>🚨</tg-emoji> <b>Select Country</b>\n\n💰 You'll earn <b>${format_decimal(code_bonus)}</b> for each code received!"
+        
+        bot.send_message(
+            call.message.chat.id,
+            title,
+            parse_mode="HTML",
+            reply_markup=markup
+        )
+    else:
+        text = t(user_id, "welcome")
+        if not text: text = "🌐 <b>مرحباً بك!</b>"
+        bot.send_message(
+            call.message.chat.id,
+            text,
+            parse_mode="HTML",
+            reply_markup=get_main_menu_lang(user_id)
+        )
+
+@bot.callback_query_handler(func=lambda call: call.data == "show_instructions")
+def show_instructions_callback(call):
+    user_id = call.from_user.id
+    lang = get_user_language(user_id)
+    
+    settings = load_referral_settings()
+    code_bonus = settings.get("code_bonus", 0.01)
+    referral_bonus = settings.get("referral_bonus", 0.50)
+    codes_required = settings.get("codes_required_for_referral", 3)
+    min_withdrawal = settings.get("min_withdrawal", 5.0)
+    
+    if lang == 'ar':
+        instructions_text = f"""📖 <b>دليل استخدام البوت</b>
+
+━━━━━━ <b>📱 استلام الأكواد</b> ━━━━━━
+
+1️⃣ <b>اختيار الدولة:</b>
+   • اضغط على "Get Number"
+   • اختر الدولة التي تريدها
+
+2️⃣ <b>اختيار الرقم:</b>
+   • ستظهر لك الأرقام المتاحة
+   • اختر الرقم المناسب
+
+3️⃣ <b>استلام الكود:</b>
+   • استخدم الرقم للتسجيل في أي موقع/تطبيق
+   • سيصلك الكود تلقائياً هنا في البوت
+
+━━━━━━ <b>💰 نظام الأرباح</b> ━━━━━━
+
+💎 <b>بونص الكود:</b>
+   • تحصل على <b>${format_decimal(code_bonus)}</b> عن كل كود تستلمه
+
+👥 <b>بونص الإحالة:</b>
+   • شارك رابط الإحالة مع أصدقائك
+   • عندما يستلم صديقك <b>{codes_required} أكواد</b>
+   • تحصل على <b>${referral_bonus:.2f}</b> مباشرة!
+
+━━━━━━ <b>💵 السحب</b> ━━━━━━
+
+💰 <b>الحد الأدنى:</b> ${min_withdrawal:.2f}
+📝 <b>طرق السحب:</b>
+   • فودافون كاش
+   • USDT (TRC20/BEP20)
+   • Binance ID
+
+⚡ <b>خطوات السحب:</b>
+   1. اذهب إلى "حسابي"
+   2. اضغط "سحب الرصيد"
+   3. اختر طريقة السحب
+   4. أدخل بياناتك
+   5. سيتم التحويل خلال 24 ساعة
+
+━━━━━━ <b>📋 ملاحظات</b> ━━━━━━
+
+⏰ انتظر الكود بعد طلب التحقق من الموقع
+🔄 يمكنك تغيير الرقم في أي وقت
+✅ الأرباح تُضاف تلقائياً لرصيدك
+
+━━━━━━ شكراً لثقتك ━━━━━━
+
+🆘 للمساعدة تواصل مع المطور"""
+    else:
+        instructions_text = f"""📖 <b>Bot Guide</b>
+
+━━━━━━ <b>📱 Receiving Codes</b> ━━━━━━
+
+1️⃣ <b>Choose Country:</b>
+   • Click on "Get Number"
+   • Select your desired country
+
+2️⃣ <b>Choose Number:</b>
+   • Available numbers will appear
+   • Select the number you want
+
+3️⃣ <b>Receive Code:</b>
+   • Use the number to register on any site/app
+   • The code will arrive automatically here in the bot
+
+━━━━━━ <b>💰 Earning System</b> ━━━━━━
+
+💎 <b>Code Bonus:</b>
+   • Earn <b>${format_decimal(code_bonus)}</b> for each code you receive
+
+👥 <b>Referral Bonus:</b>
+   • Share your referral link with friends
+   • When your friend receives <b>{codes_required} codes</b>
+   • You get <b>${referral_bonus:.2f}</b> instantly!
+
+━━━━━━ <b>💵 Withdrawal</b> ━━━━━━
+
+💰 <b>Minimum:</b> ${min_withdrawal:.2f}
+📝 <b>Withdrawal Methods:</b>
+   • Vodafone Cash
+   • USDT (TRC20/BEP20)
+   • Binance ID
+
+⚡ <b>How to Withdraw:</b>
+   1. Go to "My Account"
+   2. Click "Withdraw Balance"
+   3. Choose withdrawal method
+   4. Enter your details
+   5. Transfer within 24 hours
+
+━━━━━━ <b>📋 Notes</b> ━━━━━━
+
+⏰ Wait for code after verification request from the site
+🔄 You can change the number anytime
+✅ Earnings are added automatically
+
+━━━━━━ Thanks for your trust ━━━━━━
+
+🆘 For help, contact the developer"""
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    eloper_btn_text = "🆘 Contact eloper" if get_user_language(user_id) == "en" else "🆘 تواصل مع المطور"
+    markup.add(
+        InlineKeyboardButton(eloper_btn_text, url="https://t.me/alorhawa")
+    )
+    markup.add(
+        InlineKeyboardButton(t(user_id, "back"), callback_data="back_to_main_user")
+    )
+    
+    bot.edit_message_text(
+        instructions_text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "my_account")
+def my_account_callback(call):
+    user_id = call.from_user.id
+    
+    user_data = USERS.get(str(user_id), {})
+    activations = user_data.get("activations", 0)
+    join_date = user_data.get("join_date", datetime.now().strftime('%Y-%m-%d'))
+    lang = get_user_language(user_id)
+    
+    referral_data = get_user_referral_data(user_id)
+    balance = referral_data.get("balance", 0.0)
+    total_earned = referral_data.get("total_earned", 0.0)
+    referrals_count = len(referral_data.get("referrals", []))
+    active_referrals = referral_data.get("active_referrals", 0)
+    codes_received_bonus = referral_data.get("codes_received", 0)
+    
+    selected_country = user_data.get("selected_country")
+    selected_number = user_data.get("selected_number")
+    
+    if selected_number and selected_country:
+        number_status = f"✅ رقم نشط لـ {selected_country}" if lang == "ar" else f"✅ Active number for {selected_country}"
+    else:
+        number_status = "❌ لا يوجد رقم حالياً" if lang == "ar" else "❌ No number currently"
+    
+    bot_info = bot.get_me()
+    referral_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+    
+    if lang == "ar":
+        account_text = (
+            f"👤 <b>معلومات حسابك:</b>\n\n"
+            f"🆔 <b>معرفك:</b> <code>{user_id}</code>\n"
+            f"📅 <b>تاريخ الانضمام:</b> {join_date}\n"
+            f"📊 <b>الأكواد المستلمة:</b> {activations}\n"
+            f"🌐 <b>اللغة:</b> العربية\n\n"
+            f"💰 <b>معلومات الأرباح:</b>\n"
+            f"├ 💵 الرصيد الحالي: <b>${balance:.2f}</b>\n"
+            f"├ 📈 إجمالي الأرباح: <b>${total_earned:.2f}</b>\n"
+            f"├ 👥 عدد الإحالات: <b>{referrals_count}</b>\n"
+            f"└ ✅ إحالات نشطة: <b>{active_referrals}</b>\n\n"
+            f"🔗 <b>رابط الإحالة:</b>\n<code>{referral_link}</code>\n\n"
+            f"💡 <b>حالة رقمك:</b>\n{number_status}"
+        )
+    else:
+        account_text = (
+            f"👤 <b>Your Account Info:</b>\n\n"
+            f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
+            f"📅 <b>Join Date:</b> {join_date}\n"
+            f"📊 <b>Codes Received:</b> {activations}\n"
+            f"🌐 <b>Language:</b> English\n\n"
+            f"💰 <b>Earnings Info:</b>\n"
+            f"├ 💵 Current Balance: <b>${balance:.2f}</b>\n"
+            f"├ 📈 Total Earned: <b>${total_earned:.2f}</b>\n"
+            f"├ 👥 Total Referrals: <b>{referrals_count}</b>\n"
+            f"└ ✅ Active Referrals: <b>{active_referrals}</b>\n\n"
+            f"🔗 <b>Referral Link:</b>\n<code>{referral_link}</code>\n\n"
+            f"💡 <b>Number Status:</b>\n{number_status}"
+        )
+    
+    copy_link_text = " نسخ رابط الإحالة" if lang == "ar" else " Copy Referral Link"
+    share_link_text = "📤 مشاركة الرابط" if lang == "ar" else "📤 Share Link"
+    share_url = f"https://t.me/share/url?url={referral_link}&text={'انضم عبر رابط الإحالة!' if lang == 'ar' else 'Join via my referral link!'}"
+    
+    keyboard_rows = []
+    
+    if balance >= load_referral_settings().get("min_withdrawal", 5.0):
+        withdraw_text = "💰 سحب الرصيد" if lang == "ar" else "💰 Withdraw"
+        keyboard_rows.append([{"text": withdraw_text, "callback_data": "withdraw_balance"}])
+    
+    bonus_info_text = "📖 نظام البونص والإحالات" if lang == "ar" else "📖 Bonus & Referral System"
+    keyboard_rows.append([{"text": bonus_info_text, "callback_data": "bonus_info"}])
+    
+    keyboard_rows.append([
+        {"text": copy_link_text, "copy_text": {"text": referral_link}},
+        {"text": share_link_text, "url": share_url}
+    ])
+    
+    keyboard_rows.append([{"text": t(user_id, "change_language"), "callback_data": "change_lang"}])
+    keyboard_rows.append([{"text": t(user_id, "back"), "callback_data": "back_to_main_user"}])
+    
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
+        resp = requests.post(url, json={
+            "chat_id": call.message.chat.id,
+            "message_id": call.message.message_id,
+            "text": account_text,
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": keyboard_rows}
+        }, timeout=10)
+    except:
+        markup = InlineKeyboardMarkup(row_width=2)
+        if balance >= load_referral_settings().get("min_withdrawal", 5.0):
+            withdraw_text = "💰 سحب الرصيد" if lang == "ar" else "💰 Withdraw"
+            markup.add(InlineKeyboardButton(withdraw_text, callback_data="withdraw_balance"))
+        markup.add(InlineKeyboardButton(bonus_info_text, callback_data="bonus_info"))
+        markup.add(InlineKeyboardButton(t(user_id, "change_language"), callback_data="change_lang"))
+        markup.add(InlineKeyboardButton(t(user_id, "back"), callback_data="back_to_main_user"))
+        bot.edit_message_text(account_text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "bonus_info")
+def bonus_info_callback(call):
+    user_id = call.from_user.id
+    lang = get_user_language(user_id)
+    settings = load_referral_settings()
+    
+    code_bonus = settings.get("code_bonus", 0.01)
+    referral_bonus = settings.get("referral_bonus", 0.50)
+    codes_required = settings.get("codes_required_for_referral", 3)
+    min_withdrawal = settings.get("min_withdrawal", 5.0)
+    
+    if lang == "ar":
+        info_text = (
+            "📖 <b>نظام البونص والإحالات</b>\n\n"
+            "━━━━━━ <b>كيف تربح؟</b> ━━━━━━\n\n"
+            f"💎 <b>بونص الكود:</b>\n"
+            f"   • تحصل على <b>${format_decimal(code_bonus)}</b> عن كل كود تستلمه\n\n"
+            f"👥 <b>بونص الإحالة:</b>\n"
+            f"   • شارك رابط الإحالة مع أصدقائك\n"
+            f"   • عندما ينضم صديق عبر رابطك\n"
+            f"   • ويستلم <b>{codes_required} أكواد</b>\n"
+            f"   • تحصل على <b>${referral_bonus:.2f}</b> مباشرة!\n\n"
+            "━━━━━━ <b>السحب</b> ━━━━━━\n\n"
+            f"💰 <b>الحد الأدنى للسحب:</b> ${min_withdrawal:.2f}\n"
+            "📝 <b>طرق السحب المتاحة:</b>\n"
+            "   • فودافون كاش\n"
+            "   • USDT (TRC20/BEP20)\n"
+            "   • Binance ID\n\n"
+            "━━━━━━ <b>ملاحظات مهمة</b> ━━━━━━\n\n"
+            "✅ الأرباح تُضاف تلقائياً لرصيدك\n"
+            "✅ يمكنك تتبع إحالاتك من صفحة حسابك\n"
+            "✅ طلبات السحب تُعالج خلال 24 ساعة"
+        )
+    else:
+        info_text = (
+            "📖 <b>Bonus & Referral System</b>\n\n"
+            "━━━━━━ <b>How to Earn?</b> ━━━━━━\n\n"
+            f"💎 <b>Code Bonus:</b>\n"
+            f"   • Get <b>${format_decimal(code_bonus)}</b> for each code you receive\n\n"
+            f"👥 <b>Referral Bonus:</b>\n"
+            f"   • Share your referral link with friends\n"
+            f"   • When a friend joins via your link\n"
+            f"   • And receives <b>{codes_required} codes</b>\n"
+            f"   • You get <b>${referral_bonus:.2f}</b> instantly!\n\n"
+            "━━━━━━ <b>Withdrawal</b> ━━━━━━\n\n"
+            f"💰 <b>Minimum Withdrawal:</b> ${min_withdrawal:.2f}\n"
+            "📝 <b>Available Methods:</b>\n"
+            "   • Vodafone Cash\n"
+            "   • USDT (TRC20/BEP20)\n"
+            "   • Binance ID\n\n"
+            "━━━━━━ <b>Important Notes</b> ━━━━━━\n\n"
+            "✅ Earnings are added automatically to your balance\n"
+            "✅ Track your referrals from your account page\n"
+            "✅ Withdrawal requests are processed within 24 hours"
+        )
+    
+    markup = InlineKeyboardMarkup()
+    back_text = "🔙 رجوع" if lang == "ar" else "🔙 Back"
+    markup.add(InlineKeyboardButton(back_text, callback_data="my_account"))
+    
+    bot.edit_message_text(
+        info_text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "change_lang")
+def change_language_callback(call):
+    user_id = call.from_user.id
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🇸🇦 العربية", callback_data="set_lang_ar", style="success"),
+        InlineKeyboardButton("🇬🇧 English", callback_data="set_lang_en", style="primary")
+    )
+    
+    bot.edit_message_text(
+        "🌍 <b>اختر اللغة / Choose Language</b>",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_main_user")
+def back_to_main_user_callback(call):
+    user_id = call.from_user.id
+    lang = get_user_language(user_id)
+    settings = load_referral_settings()
+    code_bonus = settings.get("code_bonus", 0.01)
+    
+    markup = get_country_buttons(user_id)
+    if markup:
+        if lang == "ar":
+            title = f"<tg-emoji emoji-id='5972277098830634724'>🚨</tg-emoji> <b>اختر المنصة</b>\n\n<tg-emoji emoji-id='6046356449938905522'>💰</tg-emoji> ستربح <b>${format_decimal(code_bonus)}</b> عند كل كود تستلمه!"
+        else:
+            title = f"<tg-emoji emoji-id='5972277098830634724'>🚨</tg-emoji> <b>Select Country</b>\n\n💰 You'll earn <b>${format_decimal(code_bonus)}</b> for each code received!"
+        
+        try:
+            bot.edit_message_text(
+                title,
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+        except:
+            pass
+    else:
+        try:
+            text = t(user_id, "welcome")
+            if not text: text = "🌐 <b>مرحباً بك!</b>"
+            bot.edit_message_text(
+                text,
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="HTML",
+                reply_markup=get_main_menu_lang(user_id)
+            )
+        except:
+            pass
+
+def get_single_channel_keyboard(channel, lang="ar"):
+    markup = InlineKeyboardMarkup()
+    btn_name = channel.get(f"name_{lang}", channel.get("name", "Join 🔗"))
+    markup.add(InlineKeyboardButton(btn_name, url=channel['url']))
+    
+    verify_text = "✅ تحقق من الاشتراك"
+    if lang == "en":
+        verify_text = "✅ Verify Subscription"
+    elif lang != "ar":
+        verify_text = "✅ تحقق / Verify"
+        
+    markup.add(InlineKeyboardButton(verify_text, callback_data="verify_subscription"))
+    return markup
+
+def get_subscription_message_for_channel(channel, user_id):
+    lang = get_user_language(user_id)
+    
+    channel_name = channel.get(f"name_{lang}", channel.get("name", "Join 🔗"))
+    
+    if lang == "ar":
+        return f"⚠️ <b>يجب عليك الاشتراك في قناة البوت لتتمكن من استخدامه.</b>\n\n📢 القناة: <b>{channel_name}</b>"
+    else:
+        return f"⚠️ <b>You must subscribe to the bot channel to use it.</b>\n\n📢 Channel: <b>{channel_name}</b>"
+
+@bot.callback_query_handler(func=lambda call: call.data == "verify_subscription")
+def verify_subscription_callback(call):
+    user_id = call.from_user.id
+    lang = get_user_language(user_id)
+    
+    unjoined_channel = get_first_unjoined_channel(user_id)
+    
+    if unjoined_channel:
+        try:
+            bot.edit_message_text(
+                get_subscription_message_for_channel(unjoined_channel, user_id),
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="HTML",
+                reply_markup=get_single_channel_keyboard(unjoined_channel, user_id)
+            )
+        except:
+            pass
+        
+        if lang == "ar":
+            bot.answer_callback_query(call.id, "❌ انضم للقناة أولاً!", show_alert=True)
+        else:
+            bot.answer_callback_query(call.id, "❌ Join the channel first!", show_alert=True)
+        return
+    
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+
+    if str(user_id) not in USERS:
+        USERS[str(user_id)] = {"selected_country": None, "selected_number": None}
+        save_users()
+
+    settings = load_referral_settings()
+    code_bonus = settings.get("code_bonus", 0.01)
+    markup = get_country_buttons(user_id)
+    
+    if markup:
+        if lang == "ar":
+            title = f"📱 <b>اختر المنصة</b>\n\n<tg-emoji emoji-id='6046356449938905522'>💰</tg-emoji> ستربح <b>${format_decimal(code_bonus)}</b> عند كل كود تستلمه!"
+        else:
+            title = f"🌍 <b>Select Country</b>\n\n<tg-emoji emoji-id='6046356449938905522'>💰</tg-emoji>You'll earn <b>${format_decimal(code_bonus)}</b> for each code received!"
+        bot.send_message(call.message.chat.id, title, parse_mode="HTML", reply_markup=markup)
+    else:
+        bot.send_message(call.message.chat.id, t(user_id, "welcome"), parse_mode="HTML", reply_markup=get_main_menu_lang(user_id))
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_panel")
+def admin_panel_callback(call):
+    user_id = call.from_user.id
+
+    if not is_admin(user_id):
+        bot.answer_callback_query(call.id, "⛔️ غير مصرح لك بالوصول لهذه اللوحة", show_alert=True)
+        return
+
+    bot.edit_message_text(
+        "🎛 <b>لوحة الإدارة</b>\n\nاختر الإجراء المطلوب:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=get_admin_menu()
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("na_add_country_srv_"))
+def na_add_country_server_callback(call):
+    user_id = call.from_user.id
+    if not is_numbers_admin(user_id):
+        return
+    
+    if user_id not in user_states or user_states[user_id].get("action") != "na_add_country_server":
+        bot.answer_callback_query(call.id, "❌ انتهت الجلسة!", show_alert=True)
+        return
+    
+    server = call.data.replace("na_add_country_srv_", "")
+    state = user_states[user_id]
+    
+    user_states[user_id] = {
+        "action": "na_add_country_platforms",
+        "numbers_file": state.get("numbers_file"),
+        "country_code": state.get("country_code"),
+        "country_name": state.get("country_name"),
+        "num_cleaned": state.get("num_cleaned"),
+        "server": server,
+        "selected_platforms": []
+    }
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("📘 Facebook", callback_data="na_add_country_plt_Facebook", style="primary"),
+        InlineKeyboardButton("💬 WhatsApp", callback_data="na_add_country_plt_WhatsApp", style="success")
+    )
+    markup.add(
+        InlineKeyboardButton("✈️ Telegram", callback_data="na_add_country_plt_Telegram", style="primary"),
+        InlineKeyboardButton("📸 Instagram", callback_data="na_add_country_plt_Instagram", style="danger")
+    )
+    markup.add(
+        InlineKeyboardButton("🐦 Twitter/X", callback_data="na_add_country_plt_Twitter", style="success"),
+        InlineKeyboardButton("📱 TikTok", callback_data="na_add_country_plt_TikTok", style="danger")
+    )
+    markup.add(
+        InlineKeyboardButton("🎮 Discord", callback_data="na_add_country_plt_Discord", style="primary"),
+        InlineKeyboardButton("📧 Gmail", callback_data="na_add_country_plt_Gmail", style="success")
+    )
+    markup.add(
+        InlineKeyboardButton("🌐 جميع المنصات", callback_data="na_add_country_plt_ALL", style="success")
+    )
+    markup.add(InlineKeyboardButton("✅ تأكيد وإنهاء", callback_data="na_add_country_finish", style="success"))
+    markup.add(InlineKeyboardButton("❌ إلغاء", callback_data="numbers_admin_panel", style="danger"))
+    
+    server_names = {
+        "GROUP": "𝐒𝐞𝐫𝐯𝐞𝐫 𝟏",
+        "Fly sms": "𝐒𝐞𝐫𝐯𝐞𝐫 𝟐",
+        "Number_Panel": "𝐒𝐞𝐫𝐯𝐞𝐫 𝟑",
+        "Bolt": "𝐒𝐞𝐫𝐯𝐞𝐫 𝟒",
+        "iVASMS": "𝐒𝐞𝐫𝐯𝐞𝐫 𝟓",
+        "MSI": "𝐒𝐞𝐫𝐯𝐞𝐫 𝟔",
+        "proton SMS": "𝐒𝐞𝐫𝐯𝐞𝐫 𝟕"
+    }
+    
+    bot.edit_message_text(
+        f"✅ <b>الخطوة 5/5 - اختيار المنصات</b>\n\n"
+        f"🌍 الدولة: <b>{state.get('country_name')}</b>\n"
+        f"🔢 رمز الدولة: <b>{state.get('country_code')}</b>\n"
+        f"🖥️ السيرفر: <b>{server_names.get(server, server)}</b>\n\n"
+        f"📱 <b>المنصات المختارة:</b> لا يوجد\n\n"
+        f"اختر المنصات التي تعمل عليها هذه الأرقام:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "na_add_country_edit_name")
+def na_add_country_edit_name_callback(call):
+    user_id = call.from_user.id
+    if not is_numbers_admin(user_id):
+        return
+    
+    lang = get_user_language(user_id)
+    state = user_states.get(user_id)
+    if not state:
+        bot.answer_callback_query(call.id, "❌ انتهت الجلسة!", show_alert=True)
+        return
+    
+    state["action"] = "na_add_country_edit_name_input"
+    text = "📝 يرجى إرسال الاسم الجديد للدولة:" if lang == "ar" else "📝 Please send the new country name:"
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("na_add_country_plt_"))
+def na_add_country_platform_callback(call):
+    user_id = call.from_user.id
+    if not is_numbers_admin(user_id):
+        return
+    
+    if user_id not in user_states or user_states[user_id].get("action") != "na_add_country_platforms":
+        bot.answer_callback_query(call.id, "❌ انتهت الجلسة!", show_alert=True)
+        return
+    
+    platform = call.data.replace("na_add_country_plt_", "")
+    state = user_states[user_id]
+    selected_platforms = state.get("selected_platforms", [])
+    
+    if platform == "ALL":
+        selected_platforms = ["Facebook", "WhatsApp", "Telegram", "Instagram", "Twitter", "TikTok", "Discord", "Gmail"]
+    elif platform in selected_platforms:
+        selected_platforms.remove(platform)
+    else:
+        selected_platforms.append(platform)
+    
+    user_states[user_id]["selected_platforms"] = selected_platforms
+    
+    platform_icons = {
+        "Facebook": "📘", "WhatsApp": "💬", "Telegram": "✈️",
+        "Instagram": "📸", "Twitter": "🐦", "TikTok": "📱",
+        "Discord": "🎮", "Gmail": "📧"
+    }
+    
+    def get_btn_text(name, icon):
+        check = "✅" if name in selected_platforms else ""
+        return f"{check} {icon} {name}"
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton(get_btn_text("Facebook", "📘"), callback_data="na_add_country_plt_Facebook"),
+        InlineKeyboardButton(get_btn_text("WhatsApp", "💬"), callback_data="na_add_country_plt_WhatsApp")
+    )
+    markup.add(
+        InlineKeyboardButton(get_btn_text("Telegram", "✈️"), callback_data="na_add_country_plt_Telegram"),
+        InlineKeyboardButton(get_btn_text("Instagram", "📸"), callback_data="na_add_country_plt_Instagram")
+    )
+    markup.add(
+        InlineKeyboardButton(get_btn_text("Twitter", "🐦"), callback_data="na_add_country_plt_Twitter"),
+        InlineKeyboardButton(get_btn_text("TikTok", "📱"), callback_data="na_add_country_plt_TikTok")
+    )
+    markup.add(
+        InlineKeyboardButton(get_btn_text("Discord", "🎮"), callback_data="na_add_country_plt_Discord"),
+        InlineKeyboardButton(get_btn_text("Gmail", "📧"), callback_data="na_add_country_plt_Gmail")
+    )
+    markup.add(
+        InlineKeyboardButton("🌐 جميع المنصات", callback_data="na_add_country_plt_ALL", style="success")
+    )
+    markup.add(InlineKeyboardButton("✅ تأكيد وإنهاء", callback_data="na_add_country_finish", style="success"))
+    markup.add(InlineKeyboardButton("❌ إلغاء", callback_data="numbers_admin_panel", style="danger"))
+    
+    
+    platform_icons = {
+        "Facebook": "📘", "WhatsApp": "💬", "Telegram": "✈️",
+        "Instagram": "📸", "Twitter": "🐦", "TikTok": "📱",
+        "Discord": "🎮", "Gmail": "📧"
+    }
+    
+    platforms_text = ", ".join([f"{platform_icons.get(p, '📱')} {p}" for p in selected_platforms]) if selected_platforms else "لا يوجد"
+    
+    bot.edit_message_text(
+        f"✅ <b>الخطوة 5/5 - اختيار المنصات</b>\n\n"
+        f"🌍 الدولة: <b>{state.get('country_name')}</b>\n"
+        f"🔢 رمز الدولة: <b>{state.get('country_code')}</b>\n"
+        f"📱 <b>المنصات المختارة:</b> {platforms_text}\n\n"
+        f"اختر المنصات التي تعمل عليها هذه الأرقام:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "na_add_country_finish")
+def na_add_country_finish_callback(call):
+    user_id = call.from_user.id
+    if not is_numbers_admin(user_id):
+        return
+    
+    if user_id not in user_states or user_states[user_id].get("action") != "na_add_country_platforms":
+        bot.answer_callback_query(call.id, "❌ انتهت الجلسة!", show_alert=True)
+        return
+    
+    state = user_states[user_id]
+    country_name = state.get("country_name")
+    country_code = state.get("country_code")
+    numbers_file = state.get("numbers_file")
+    server = state.get("server")
+    selected_platforms = state.get("selected_platforms", [])
+    num_cleaned = state.get("num_cleaned", 0)
+    
+    if not selected_platforms:
+        bot.answer_callback_query(call.id, "❌ يجب اختيار منصة واحدة على الأقل!", show_alert=True)
+        return
+    
+    flag = get_flag_for_country_code(country_code)
+    
+    
+    country_id = f"{country_name}_{uuid.uuid4().hex[:6]}"
+    
+    COUNTRIES[country_id] = {
+        "display_name": country_name,
+        "file": numbers_file,
+        "code": country_code,
+        "flag": flag,
+        "server": server,
+        "platforms": selected_platforms,
+        "numbers_count": num_cleaned,
+        "added_by": user_id,
+        "added_at": datetime.now().isoformat()
+    }
+    save_countries()
+    
+    del user_states[user_id]
+    
+    server_names = {
+        "GROUP": "𝐒𝐞𝐫𝐯𝐞𝐫 𝟏",
+        "Fly sms": "𝐒𝐞𝐫𝐯𝐞𝐫 𝟐",
+        "Number_Panel": "𝐒𝐞𝐫𝐯𝐞𝐫 𝟑",
+        "Bolt": "𝐒𝐞𝐫𝐯𝐞𝐫 𝟒",
+        "iVASMS": "𝐒𝐞𝐫𝐯𝐞𝐫 𝟓",
+        "MSI": "𝐒𝐞𝐫𝐯𝐞𝐫 𝟔",
+        "proton SMS": "𝐒𝐞𝐫𝐯𝐞𝐫 𝟕"
+    }
+    
+    platforms_text = ", ".join(selected_platforms)
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("➕ إضافة دولة أخرى", callback_data="admin_add_country", style="success"),
+        InlineKeyboardButton("📄 إضافة ملف آخر", callback_data="admin_add_country", style="success")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع للوحة", callback_data="admin_panel", style="danger"))
+    
+    bot.edit_message_text(
+        f"✅ <b>تم إضافة الدولة بنجاح!</b>\n\n"
+        f"🌍 الدولة: <b>{flag} {country_name}</b>\n"
+        f"🔢 رمز الدولة: <b>{country_code}</b>\n"
+        f"📊 عدد الأرقام: <b>{num_cleaned}</b>\n"
+        f"🖥️ السيرفر: <b>{server_names.get(server, server)}</b>\n"
+        f"📱 المنصات: <b>{platforms_text}</b>",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+def get_flag_for_country_code(country_code):
+    try:
+       
+        code_str = str(country_code).replace('+', '').strip()
+        if not code_str.isdigit():
+            return "🌍"
+            
+        import phonenumbers
+        from phonenumbers.phonenumberutil import region_code_for_country_code
+        
+       
+        region = region_code_for_country_code(int(code_str))
+        if region and region != 'ZZ':
+            return get_flag(region)
+    except Exception as e:
+        print(f"Error getting flag for code {country_code}: {e}")
+        
+    return "🌍"
+
+@bot.callback_query_handler(func=lambda call: call.data == "na_list_countries")
+def na_list_countries_callback(call):
+    user_id = call.from_user.id
+    if not is_numbers_admin(user_id):
+        return
+    
+    if not COUNTRIES:
+        text = "📋 <b>الدول المتاحة</b>\n\n❌ لا توجد دول مضافة بعد!"
+    else:
+        text = "📋 <b>الدول المتاحة</b>\n\n"
+        for idx, (country_name, info) in enumerate(sorted(COUNTRIES.items()), 1):
+            flag = info.get("flag", "🌍")
+            server = info.get("server", "N/A")
+            platforms = info.get("platforms", [])
+            platforms_count = len(platforms)
+            text += f"{idx}. {flag} <b>{country_name}</b> - {server} ({platforms_count} منصات)\n"
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="numbers_admin_panel", style="danger"))
+    
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "na_ban_user")
+def na_ban_user_callback(call):
+    user_id = call.from_user.id
+    if not is_numbers_admin(user_id):
+        return
+    
+    user_states[user_id] = {"mode": "na_ban_user"}
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("❌ إلغاء", callback_data="numbers_admin_panel", style="danger"))
+    
+    bot.edit_message_text(
+        "🚫 <b>حظر مستخدم</b>\n\n"
+        "📝 أرسل معرف المستخدم (ID) الذي تريد حظره:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "na_unban_user")
+def na_unban_user_callback(call):
+    user_id = call.from_user.id
+    if not is_numbers_admin(user_id):
+        return
+    
+    user_states[user_id] = {"mode": "na_unban_user"}
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("❌ إلغاء", callback_data="numbers_admin_panel", style="danger"))
+    
+    bot.edit_message_text(
+        "✅ <b>إلغاء حظر مستخدم</b>\n\n"
+        "📝 أرسل معرف المستخدم (ID) الذي تريد إلغاء حظره:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "na_banned_list")
+def na_banned_list_callback(call):
+    user_id = call.from_user.id
+    if not is_numbers_admin(user_id):
+        return
+    
+    if not BANNED:
+        text = "📊 <b>قائمة المحظورين</b>\n\n✅ لا يوجد مستخدمين محظورين!"
+    else:
+        text = "📊 <b>قائمة المحظورين</b>\n\n"
+        for idx, banned_id in enumerate(BANNED[:50], 1):
+            text += f"{idx}. <code>{banned_id}</code>\n"
+        if len(BANNED) > 50:
+            text += f"\n... و {len(BANNED) - 50} آخرين"
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="numbers_admin_panel", style="danger"))
+    
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_manage_numbers_admins")
+def admin_manage_numbers_admins_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        bot.answer_callback_query(call.id, "⛔️ غير مصرح لك!", show_alert=True)
+        return
+    
+    text = "🧮 <b>إدارة أدمن الأرقام</b>\n\n"
+    text += f"👥 عدد أدمن الأرقام: {len(NUMBERS_ADMINS)}\n\n"
+    
+    if NUMBERS_ADMINS:
+        text += "<b>القائمة الحالية:</b>\n"
+        for idx, admin_id in enumerate(NUMBERS_ADMINS, 1):
+            text += f"{idx}. <code>{admin_id}</code>\n"
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("➕ إضافة أدمن أرقام", callback_data="add_numbers_admin", style="success"),
+        InlineKeyboardButton("➖ حذف أدمن أرقام", callback_data="remove_numbers_admin", style="danger")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel", style="danger"))
+    
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "add_numbers_admin")
+def add_numbers_admin_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    user_states[user_id] = {"mode": "add_numbers_admin"}
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("❌ إلغاء", callback_data="admin_manage_numbers_admins", style="danger"))
+    
+    bot.edit_message_text(
+        "➕ <b>إضافة أدمن أرقام جديد</b>\n\n"
+        "📝 أرسل معرف المستخدم (User ID) الذي تريد تعيينه كأدمن أرقام:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "remove_numbers_admin")
+def remove_numbers_admin_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    if not NUMBERS_ADMINS:
+        bot.answer_callback_query(call.id, "❌ لا يوجد أدمن أرقام!", show_alert=True)
+        return
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    for admin_id in NUMBERS_ADMINS:
+        markup.add(
+            InlineKeyboardButton(
+                f"🗑 حذف {admin_id}",
+                callback_data=f"del_numbers_admin_{admin_id}"
+            )
+        )
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin_manage_numbers_admins", style="danger"))
+    
+    bot.edit_message_text(
+        "➖ <b>حذف أدمن أرقام</b>\n\n"
+        "اختر الأدمن الذي تريد حذفه:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("del_numbers_admin_"))
+def del_numbers_admin_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    admin_to_remove = int(call.data.replace("del_numbers_admin_", ""))
+    
+    if admin_to_remove in NUMBERS_ADMINS:
+        NUMBERS_ADMINS.remove(admin_to_remove)
+        save_numbers_admins()
+        bot.answer_callback_query(call.id, f"✅ تم حذف {admin_to_remove} من أدمن الأرقام!", show_alert=True)
+    else:
+        bot.answer_callback_query(call.id, "❌ الأدمن غير موجود!", show_alert=True)
+    
+    admin_manage_numbers_admins_callback(call)
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_statistics")
+def admin_statistics_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    stats_text = get_statistics_text()
+    bot.send_message(call.message.chat.id, stats_text, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_referral_settings")
+def admin_referral_settings_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    settings = load_referral_settings()
+    
+    text = (
+        "💰 <b>إعدادات نظام الإحالات والبونص</b>\n\n"
+        f"🎁 بونص الكود: <b>${settings.get('code_bonus', 0.01)}</b>\n"
+        f"👥 بونص الإحالة: <b>${settings.get('referral_bonus', 0.50)}</b>\n"
+        f"📊 عدد الأكواد المطلوبة للإحالة النشطة: <b>{settings.get('codes_required_for_referral', 3)}</b>\n"
+        f"💵 الحد الأدنى للسحب: <b>${settings.get('min_withdrawal', 5.0)}</b>\n\n"
+        "اختر الإعداد الذي تريد تعديله:"
+    )
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🎁 بونص الكود", callback_data="edit_code_bonus", style="success"),
+        InlineKeyboardButton("👥 بونص الإحالة", callback_data="edit_referral_bonus", style="primary")
+    )
+    markup.add(
+        InlineKeyboardButton("📊 أكواد الإحالة", callback_data="edit_codes_required", style="success"),
+        InlineKeyboardButton("💵 حد السحب", callback_data="edit_min_withdrawal", style="primary")
+    )
+    markup.add(
+        InlineKeyboardButton("➕ إضافة رصيد لمستخدم", callback_data="admin_add_balance", style="success"),
+        InlineKeyboardButton("➖ خصم رصيد من مستخدم", callback_data="admin_subtract_balance", style="danger")
+    )
+    markup.add(
+        InlineKeyboardButton("📋 طلبات السحب", callback_data="view_withdrawal_requests", style="success"),
+        InlineKeyboardButton("⚙️ طرق السحب", callback_data="admin_withdrawal_methods", style="primary")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin", style="danger"))
+    
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "edit_code_bonus")
+def edit_code_bonus_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    user_states[user_id] = {"action": "edit_code_bonus"}
+    bot.send_message(
+        call.message.chat.id,
+        "🎁 <b>تعديل بونص الكود</b>\n\n"
+        "أرسل القيمة الجديدة (مثال: 0.01 أو 0.02):",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "edit_referral_bonus")
+def edit_referral_bonus_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    user_states[user_id] = {"action": "edit_referral_bonus"}
+    bot.send_message(
+        call.message.chat.id,
+        "👥 <b>تعديل بونص الإحالة</b>\n\n"
+        "أرسل القيمة الجديدة (مثال: 0.50 أو 1.00):",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "edit_codes_required")
+def edit_codes_required_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    user_states[user_id] = {"action": "edit_codes_required"}
+    bot.send_message(
+        call.message.chat.id,
+        "📊 <b>تعديل عدد الأكواد المطلوبة</b>\n\n"
+        "أرسل العدد الجديد (مثال: 3 أو 5):",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "edit_min_withdrawal")
+def edit_min_withdrawal_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    user_states[user_id] = {"action": "edit_min_withdrawal"}
+    bot.send_message(
+        call.message.chat.id,
+        "💵 <b>تعديل الحد الأدنى للسحب</b>\n\n"
+        "أرسل القيمة الجديدة (مثال: 5.00 أو 10.00):",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_add_balance")
+def admin_add_balance_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    user_states[user_id] = {"action": "admin_add_balance"}
+    bot.send_message(
+        call.message.chat.id,
+        "➕ <b>إضافة رصيد لمستخدم</b>\n\n"
+        "أرسل معرف المستخدم والمبلغ بالصيغة التالية:\n"
+        "<code>USER_ID AMOUNT</code>\n\n"
+        "مثال: <code>123456789 5.00</code>",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_subtract_balance")
+def admin_subtract_balance_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    user_states[user_id] = {"action": "admin_subtract_balance"}
+    bot.send_message(
+        call.message.chat.id,
+        "➖ <b>خصم رصيد من مستخدم</b>\n\n"
+        "أرسل معرف المستخدم والمبلغ بالصيغة التالية:\n"
+        "<code>USER_ID AMOUNT</code>\n\n"
+        "مثال: <code>123456789 5.00</code>",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "view_withdrawal_requests")
+def view_withdrawal_requests_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    requests = load_withdrawal_requests()
+    pending_requests = [r for r in requests if r.get("status") == "pending"]
+    
+    if not pending_requests:
+        bot.answer_callback_query(call.id, "📭 لا توجد طلبات سحب معلقة!", show_alert=True)
+        return
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    for req in pending_requests[:10]:
+        req_id = req.get("id", "")[:8]
+        user_req_id = req.get("user_id")
+        amount = req.get("amount", 0)
+        markup.add(
+            InlineKeyboardButton(
+                f"👤 {user_req_id} | ${amount:.2f}",
+                callback_data=f"view_wd_req_{req_id}"
+            )
+        )
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin_referral_settings", style="danger"))
+    
+    bot.edit_message_text(
+        f"📋 <b>طلبات السحب المعلقة</b>\n\nعدد الطلبات: {len(pending_requests)}",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("view_wd_req_"))
+def view_wd_request_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    req_id = call.data.replace("view_wd_req_", "")
+    requests = load_withdrawal_requests()
+    
+    req = None
+    for r in requests:
+        if r.get("id", "").startswith(req_id):
+            req = r
+            break
+    
+    if not req:
+        bot.answer_callback_query(call.id, "❌ الطلب غير موجود!", show_alert=True)
+        return
+    
+    target_user_id = req.get('user_id')
+    target_user_data = USERS.get(str(target_user_id), {})
+    target_referral_data = get_user_referral_data(target_user_id)
+    
+    join_date = target_user_data.get("join_date", "غير محدد")
+    total_codes = target_user_data.get("activations", 0)
+    total_referrals = len(target_referral_data.get("referrals", []))
+    active_referrals = target_referral_data.get("active_referrals", 0)
+    total_earned = target_referral_data.get("total_earned", 0.0)
+    current_balance = target_referral_data.get("balance", 0.0)
+    
+    text = (
+        f"📋 <b>تفاصيل طلب السحب</b>\n\n"
+        f"🆔 معرف الطلب: <code>{req.get('id', '')[:8]}</code>\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>بيانات المستخدم:</b>\n"
+        f"├ 🆔 ID: <code>{target_user_id}</code>\n"
+        f"├ 📅 تاريخ الانضمام: {join_date}\n"
+        f"├ 📊 إجمالي الأكواد: {total_codes}\n"
+        f"├ 👥 إجمالي الإحالات: {total_referrals}\n"
+        f"├ ✅ إحالات نشطة: {active_referrals}\n"
+        f"├ 💰 إجمالي الأرباح: ${total_earned:.2f}\n"
+        f"└ 💵 الرصيد الحالي: ${current_balance:.2f}\n\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"💳 <b>تفاصيل السحب:</b>\n"
+        f"├ 💵 المبلغ: <b>${req.get('amount', 0):.2f}</b>\n"
+        f"├ 📝 الطريقة: {req.get('method', 'غير محدد')}\n"
+        f"├ 📋 التفاصيل: <code>{req.get('details', 'غير محدد')}</code>\n"
+        f"├ 📅 التاريخ: {req.get('date', 'غير محدد')}\n"
+        f"└ 📊 الحالة: {req.get('status', 'pending')}"
+    )
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("✅ تأكيد الدفع", callback_data=f"approve_wd_{req_id}"),
+        InlineKeyboardButton("❌ رفض", callback_data=f"reject_wd_{req_id}")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="view_withdrawal_requests", style="danger"))
+    
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("approve_wd_") or call.data.startswith("wd_approve_"))
+def approve_withdrawal_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    if call.data.startswith("wd_approve_"):
+        req_id = call.data.replace("wd_approve_", "")
+    else:
+        req_id = call.data.replace("approve_wd_", "")
+    
+    requests = load_withdrawal_requests()
+    
+    for i, req in enumerate(requests):
+        if req.get("id", "").startswith(req_id):
+            requests[i]["status"] = "approved"
+            save_withdrawal_requests(requests)
+            
+            target_user_id = req.get("user_id")
+            user_lang = get_user_language(target_user_id)
+            
+            try:
+                if user_lang == "ar":
+                    bot.send_message(
+                        target_user_id,
+                        f"✅ <b>تم إرسال المبلغ بنجاح!</b>\n\n"
+                        f"🆔 رقم الطلب: <code>{req.get('id', '')[:8]}</code>\n"
+                        f"💵 المبلغ: <b>${req.get('amount', 0):.2f}</b>\n"
+                        f"📝 الطريقة: {req.get('method', '')}\n"
+                        f"📋 التفاصيل: <code>{req.get('details', '')}</code>\n\n"
+                        f"💰 تم تحويل المبلغ إلى حسابك بنجاح.\n"
+                        f"شكراً لاستخدامك البوت! 🎉",
+                        parse_mode="HTML"
+                    )
+                else:
+                    bot.send_message(
+                        target_user_id,
+                        f"✅ <b>Payment sent successfully!</b>\n\n"
+                        f"🆔 Request ID: <code>{req.get('id', '')[:8]}</code>\n"
+                        f"💵 Amount: <b>${req.get('amount', 0):.2f}</b>\n"
+                        f"📝 Method: {req.get('method', '')}\n"
+                        f"📋 Details: <code>{req.get('details', '')}</code>\n\n"
+                        f"💰 The amount has been successfully transferred to your account.\n"
+                        f"Thank you for using the bot! 🎉",
+                        parse_mode="HTML"
+                    )
+            except:
+                pass
+            
+            try:
+                bot.edit_message_text(
+                    f"✅ <b>تم تأكيد الدفع!</b>\n\n"
+                    f"🆔 رقم الطلب: <code>{req.get('id', '')[:8]}</code>\n"
+                    f"👤 المستخدم: <code>{target_user_id}</code>\n"
+                    f"💵 المبلغ: <b>${req.get('amount', 0):.2f}</b>\n"
+                    f"📝 الطريقة: {req.get('method', '')}\n"
+                    f"📋 التفاصيل: <code>{req.get('details', '')}</code>\n\n"
+                    f"✅ تم إشعار المستخدم بإرسال المبلغ",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    parse_mode="HTML"
+                )
+            except:
+                bot.answer_callback_query(call.id, "✅ تم تأكيد الدفع!", show_alert=True)
+            break
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("reject_wd_") or call.data.startswith("wd_reject_"))
+def reject_withdrawal_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    if call.data.startswith("wd_reject_"):
+        req_id = call.data.replace("wd_reject_", "")
+    else:
+        req_id = call.data.replace("reject_wd_", "")
+    
+    requests = load_withdrawal_requests()
+    
+    for i, req in enumerate(requests):
+        if req.get("id", "").startswith(req_id):
+            requests[i]["status"] = "rejected"
+            
+            global REFERRALS
+            REFERRALS = load_referrals()
+            target_user_id = req.get("user_id")
+            user_key = str(target_user_id)
+            if user_key in REFERRALS:
+                REFERRALS[user_key]["balance"] += req.get("amount", 0)
+                save_referrals(REFERRALS)
+            
+            save_withdrawal_requests(requests)
+            
+            user_lang = get_user_language(target_user_id)
+            
+            try:
+                if user_lang == "ar":
+                    bot.send_message(
+                        target_user_id,
+                        f"❌ <b>تم رفض طلب السحب</b>\n\n"
+                        f"🆔 رقم الطلب: <code>{req.get('id', '')[:8]}</code>\n"
+                        f"💵 المبلغ: <b>${req.get('amount', 0):.2f}</b>\n\n"
+                        f"تم إرجاع المبلغ إلى رصيدك.",
+                        parse_mode="HTML"
+                    )
+                else:
+                    bot.send_message(
+                        target_user_id,
+                        f"❌ <b>Withdrawal request rejected</b>\n\n"
+                        f"🆔 Request ID: <code>{req.get('id', '')[:8]}</code>\n"
+                        f"💵 Amount: <b>${req.get('amount', 0):.2f}</b>\n\n"
+                        f"The amount has been returned to your balance.",
+                        parse_mode="HTML"
+                    )
+            except:
+                pass
+            
+            try:
+                bot.edit_message_text(
+                    f"❌ <b>تم رفض الطلب!</b>\n\n"
+                    f"🆔 رقم الطلب: <code>{req.get('id', '')[:8]}</code>\n"
+                    f"👤 المستخدم: <code>{target_user_id}</code>\n"
+                    f"💵 المبلغ: <b>${req.get('amount', 0):.2f}</b>\n"
+                    f"تم إرجاع المبلغ للمستخدم.",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    parse_mode="HTML"
+                )
+            except:
+                bot.answer_callback_query(call.id, "❌ تم رفض الطلب وإرجاع المبلغ!", show_alert=True)
+            break
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_withdrawal_methods")
+def admin_withdrawal_methods_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    methods = load_withdrawal_methods()
+    
+    text = "⚙️ <b>إدارة طرق السحب</b>\n\n"
+    text += "اضغط على طريقة السحب لتفعيلها أو تعطيلها:\n\n"
+    
+    method_icons = {"vodafone": "💳", "usdt_trc20": "📱", "usdt_bep20": "🔗", "binance_id": "🅱️"}
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    
+    for method_key, method_data in methods.items():
+        enabled = method_data.get("enabled", True)
+        name = method_data.get("name_ar", method_key)
+        icon = method_icons.get(method_key, "💰")
+        status = "✅" if enabled else "❌"
+        markup.add(InlineKeyboardButton(f"{status} {icon} {name}", callback_data=f"toggle_wd_method_{method_key}"))
+    
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin_referral_settings", style="danger"))
+    
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("toggle_wd_method_"))
+def toggle_withdrawal_method_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    method_key = call.data.replace("toggle_wd_method_", "")
+    methods = load_withdrawal_methods()
+    
+    if method_key in methods:
+        methods[method_key]["enabled"] = not methods[method_key].get("enabled", True)
+        save_withdrawal_methods(methods)
+        
+        status = "مفعّل ✅" if methods[method_key]["enabled"] else "معطّل ❌"
+        bot.answer_callback_query(call.id, f"تم تغيير الحالة إلى: {status}", show_alert=True)
+    
+    admin_withdrawal_methods_callback(call)
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_welcome_messages")
+def admin_welcome_messages_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    messages = load_welcome_messages()
+    
+    text = (
+        "📝 <b>إعدادات رسائل الترحيب</b>\n\n"
+        f"🇸🇦 <b>العربية:</b>\n{messages.get('ar', 'غير محدد')[:100]}...\n\n"
+        f"🇬🇧 <b>English:</b>\n{messages.get('en', 'Not set')[:100]}...\n\n"
+        "اختر اللغة لتعديل رسالة الترحيب:"
+    )
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🇸🇦 تعديل العربية", callback_data="edit_welcome_ar", style="success"),
+        InlineKeyboardButton("🇬🇧 Edit English", callback_data="edit_welcome_en", style="primary")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin", style="danger"))
+    
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "edit_welcome_ar")
+def edit_welcome_ar_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    user_states[user_id] = {"action": "edit_welcome_ar"}
+    messages = load_welcome_messages()
+    
+    bot.send_message(
+        call.message.chat.id,
+        f"🇸🇦 <b>تعديل رسالة الترحيب العربية</b>\n\n"
+        f"الرسالة الحالية:\n<code>{messages.get('ar', '')}</code>\n\n"
+        f"أرسل الرسالة الجديدة (يمكنك استخدام HTML):",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "edit_welcome_en")
+def edit_welcome_en_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    user_states[user_id] = {"action": "edit_welcome_en"}
+    messages = load_welcome_messages()
+    
+    bot.send_message(
+        call.message.chat.id,
+        f"🇬🇧 <b>Edit English Welcome Message</b>\n\n"
+        f"Current message:\n<code>{messages.get('en', '')}</code>\n\n"
+        f"Send the new message (HTML supported):",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_button_links")
+def admin_button_links_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    links = load_button_links()
+    
+    text = (
+        "🔗 <b>إعدادات روابط الأزرار</b>\n"
+        "🔗 <b>Button Links Settings</b>\n\n"
+        f"📢 <b>رابط الجروب / Group Link:</b>\n<code>{links.get('group_link', 'Not set')}</code>\n\n"
+        f"📺 <b>رابط القناة / Channel Link:</b>\n<code>{links.get('channel_link', 'Not set')}</code>\n\n"
+        f"👨‍💻 <b>رابط المطور / Developer Link:</b>\n<code>{links.get('developer_link', 'Not set')}</code>\n\n"
+        "اختر الرابط لتعديله:\nChoose a link to edit:"
+    )
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("📢 تعديل رابط الجروب / Edit Group Link", callback_data="edit_link_group", style="primary"),
+        InlineKeyboardButton("📺 تعديل رابط القناة / Edit Channel Link", callback_data="edit_link_channel", style="success"),
+        InlineKeyboardButton("👨‍💻 تعديل رابط المطور / Edit Developer Link", callback_data="edit_link_developer", style="primary")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع / Back", callback_data="admin", style="danger"))
+    
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("edit_link_"))
+def edit_link_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    link_type = call.data.replace("edit_link_", "")
+    link_names = {
+        "group": ("رابط الجروب", "Group Link", "group_link"),
+        "channel": ("رابط القناة", "Channel Link", "channel_link"),
+        "developer": ("رابط المطور", "Developer Link", "developer_link")
+    }
+    
+    ar_name, en_name, key = link_names.get(link_type, ("Link", "Link", "group_link"))
+    links = load_button_links()
+    current = links.get(key, "")
+    
+    user_states[user_id] = {"action": f"edit_button_link_{key}"}
+    
+    bot.send_message(
+        call.message.chat.id,
+        f"🔗 <b>تعديل {ar_name}</b>\n"
+        f"🔗 <b>Edit {en_name}</b>\n\n"
+        f"الرابط الحالي / Current link:\n<code>{current}</code>\n\n"
+        f"أرسل الرابط الجديد / Send the new link:",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_create_backup")
+def admin_create_backup_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id): return
+    bot.answer_callback_query(call.id, "جاري إنشاء النسخة الاحتياطية... ⏳")
+    try:
+        backup_file = backup_manager.create_backup()
+        with open(backup_file, 'rb') as f:
+            bot.send_document(call.message.chat.id, f, caption=f"✅ تم إنشاء النسخة الاحتياطية بنجاح!\n📅 التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        os.remove(backup_file)
+    except Exception as e:
+        bot.send_message(call.message.chat.id, f"❌ حدث خطأ أثناء إنشاء النسخة الاحتياطية: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_restore_backup")
+def admin_restore_backup_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id): return
+    msg = bot.send_message(call.message.chat.id, "📤 من فضلك أرسل ملف النسخة الاحتياطية (zip).")
+    bot.register_next_step_handler(msg, process_restore_backup)
+
+def process_restore_backup(message):
+    if not is_admin(message.from_user.id): return
+    if not message.document or not message.document.file_name.endswith('.zip'):
+        bot.reply_to(message, "❌ عذراً، يجب إرسال ملف بصيغة zip فقط.")
+        return
+    
+    bot.reply_to(message, "جاري استعادة النسخة الاحتياطية... ⏳")
+    try:
+        file_info = bot.get_file(message.document.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        with open("restore_temp.zip", 'wb') as f:
+            f.write(downloaded_file)
+            
+        if backup_manager.restore_backup("restore_temp.zip"):
+            bot.reply_to(message, "✅ تم استعادة النسخة الاحتياطية بنجاح! سيتم إعادة تحميل البيانات الآن.")
+            load_data() 
+        else:
+            bot.reply_to(message, "❌ فشل استعادة النسخة الاحتياطية.")
+        
+        if os.path.exists("restore_temp.zip"):
+            os.remove("restore_temp.zip")
+    except Exception as e:
+        bot.reply_to(message, f"❌ حدث خطأ أثناء الاستعادة: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_otp_buttons")
+def admin_otp_buttons_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    global OTP_BUTTONS
+    OTP_BUTTONS = load_otp_buttons()
+    
+    text = "🔘 <b>إعدادات أزرار رسالة OTP</b>\n\n"
+    if OTP_BUTTONS:
+        for i, btn in enumerate(OTP_BUTTONS, 1):
+            text += f"{i}. <b>{btn['name']}</b>\n   🔗 <code>{btn['url']}</code>\n\n"
+    else:
+        text += "لا توجد أزرار مضافة\n\n"
+    
+    text += "اختر الإجراء المطلوب:"
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("➕ إضافة زر جديد", callback_data="otp_btn_add", style="success"),
+        InlineKeyboardButton("✏️ تعديل زر", callback_data="otp_btn_edit_list", style="primary"),
+        InlineKeyboardButton("🗑 حذف زر", callback_data="otp_btn_delete_list", style="danger")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin", style="danger"))
+    
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "otp_btn_add")
+def otp_btn_add_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    user_states[user_id] = {"action": "otp_btn_add_name"}
+    
+    bot.send_message(
+        call.message.chat.id,
+        "➕ <b>إضافة زر جديد</b>\n\n"
+        "أرسل اسم الزر:\n"
+        "(مثال: 𝕮𝖍𝖆𝖓𝖓𝖊𝖑 أو Channel)",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "otp_btn_edit_list")
+def otp_btn_edit_list_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    global OTP_BUTTONS
+    OTP_BUTTONS = load_otp_buttons()
+    
+    if not OTP_BUTTONS:
+        bot.answer_callback_query(call.id, "❌ لا توجد أزرار للتعديل!", show_alert=True)
+        return
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    for i, btn in enumerate(OTP_BUTTONS):
+        markup.add(InlineKeyboardButton(f"✏️ {btn['name']}", callback_data=f"otp_btn_edit_{i}"))
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin_otp_buttons", style="danger"))
+    
+    bot.edit_message_text(
+        "✏️ <b>اختر الزر للتعديل:</b>",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("otp_btn_edit_") and not call.data.startswith("otp_btn_edit_name_") and not call.data.startswith("otp_btn_edit_url_") and not call.data.startswith("otp_btn_edit_list"))
+def otp_btn_edit_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    btn_idx = int(call.data.replace("otp_btn_edit_", ""))
+    global OTP_BUTTONS
+    OTP_BUTTONS = load_otp_buttons()
+    
+    if btn_idx >= len(OTP_BUTTONS):
+        bot.answer_callback_query(call.id, "❌ الزر غير موجود!", show_alert=True)
+        return
+    
+    btn = OTP_BUTTONS[btn_idx]
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("✏️ تغيير الاسم", callback_data=f"otp_btn_edit_name_{btn_idx}"),
+        InlineKeyboardButton("🔗 تغيير الرابط", callback_data=f"otp_btn_edit_url_{btn_idx}")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="otp_btn_edit_list", style="danger"))
+    
+    bot.edit_message_text(
+        f"✏️ <b>تعديل الزر:</b>\n\n"
+        f"📝 <b>الاسم:</b> {btn['name']}\n"
+        f"🔗 <b>الرابط:</b> <code>{btn['url']}</code>\n\n"
+        f"اختر ما تريد تعديله:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("otp_btn_edit_name_"))
+def otp_btn_edit_name_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    btn_idx = int(call.data.replace("otp_btn_edit_name_", ""))
+    user_states[user_id] = {"action": "otp_btn_edit_name", "btn_idx": btn_idx}
+    
+    bot.send_message(
+        call.message.chat.id,
+        "✏️ أرسل الاسم الجديد للزر:",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("otp_btn_edit_url_"))
+def otp_btn_edit_url_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    btn_idx = int(call.data.replace("otp_btn_edit_url_", ""))
+    user_states[user_id] = {"action": "otp_btn_edit_url", "btn_idx": btn_idx}
+    
+    bot.send_message(
+        call.message.chat.id,
+        "🔗 أرسل الرابط الجديد للزر:",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "otp_btn_delete_list")
+def otp_btn_delete_list_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    global OTP_BUTTONS
+    OTP_BUTTONS = load_otp_buttons()
+    
+    if not OTP_BUTTONS:
+        bot.answer_callback_query(call.id, "❌ لا توجد أزرار للحذف!", show_alert=True)
+        return
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    for i, btn in enumerate(OTP_BUTTONS):
+        markup.add(InlineKeyboardButton(f"🗑 {btn['name']}", callback_data=f"otp_btn_delete_{i}"))
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin_otp_buttons", style="danger"))
+    
+    bot.edit_message_text(
+        "🗑 <b>اختر الزر للحذف:</b>",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("otp_btn_delete_") and not call.data.startswith("otp_btn_delete_list"))
+def otp_btn_delete_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    btn_idx = int(call.data.replace("otp_btn_delete_", ""))
+    global OTP_BUTTONS
+    OTP_BUTTONS = load_otp_buttons()
+    
+    if btn_idx >= len(OTP_BUTTONS):
+        bot.answer_callback_query(call.id, "❌ الزر غير موجود!", show_alert=True)
+        return
+    
+    deleted_btn = OTP_BUTTONS.pop(btn_idx)
+    save_otp_buttons(OTP_BUTTONS)
+    
+    bot.answer_callback_query(call.id, f"✅ تم حذف الزر: {deleted_btn['name']}", show_alert=True)
+    
+    text = "🔘 <b>إعدادات أزرار رسالة OTP</b>\n\n"
+    if OTP_BUTTONS:
+        for i, btn in enumerate(OTP_BUTTONS, 1):
+            text += f"{i}. <b>{btn['name']}</b>\n   🔗 <code>{btn['url']}</code>\n\n"
+    else:
+        text += "لا توجد أزرار مضافة\n\n"
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("➕ إضافة زر جديد", callback_data="otp_btn_add", style="success"),
+        InlineKeyboardButton("✏️ تعديل زر", callback_data="otp_btn_edit_list", style="primary"),
+        InlineKeyboardButton("🗑 حذف زر", callback_data="otp_btn_delete_list", style="danger")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin", style="danger"))
+    
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "withdraw_balance")
+def withdraw_balance_callback(call):
+    user_id = call.from_user.id
+    lang = get_user_language(user_id)
+    
+    referral_data = get_user_referral_data(user_id)
+    balance = referral_data.get("balance", 0.0)
+    settings = load_referral_settings()
+    min_withdrawal = settings.get("min_withdrawal", 5.0)
+    
+    if balance < min_withdrawal:
+        msg = f"❌ رصيدك ({balance:.2f}$) أقل من الحد الأدنى للسحب ({min_withdrawal}$)" if lang == "ar" else f"❌ Your balance (${balance:.2f}) is below minimum withdrawal (${min_withdrawal})"
+        bot.answer_callback_query(call.id, msg, show_alert=True)
+        return
+    
+    user_states[user_id] = {"action": "withdraw_method"}
+    
+    methods = load_withdrawal_methods()
+    markup = InlineKeyboardMarkup(row_width=2)
+    
+    method_icons = {"vodafone": "💳", "usdt_trc20": "📱", "usdt_bep20": "🔗", "binance_id": "🅱️"}
+    
+    for method_key, method_data in methods.items():
+        if method_data.get("enabled", True):
+            name = method_data.get(f"name_{lang}", method_data.get("name_en", method_key))
+            icon = method_icons.get(method_key, "💰")
+            markup.add(InlineKeyboardButton(f"{icon} {name}", callback_data=f"wd_method_{method_key}"))
+    
+    back_text = "🔙 رجوع" if lang == "ar" else "🔙 Back"
+    markup.add(InlineKeyboardButton(back_text, callback_data="my_account"))
+    
+    if lang == "ar":
+        text = f"💰 <b>سحب الرصيد</b>\n\n💵 رصيدك الحالي: <b>${balance:.2f}</b>\n\nاختر طريقة السحب:"
+    else:
+        text = f"💰 <b>Withdraw Balance</b>\n\n💵 Your balance: <b>${balance:.2f}</b>\n\nChoose withdrawal method:"
+    
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("wd_method_"))
+def withdraw_method_callback(call):
+    user_id = call.from_user.id
+    lang = get_user_language(user_id)
+    method_key = call.data.replace("wd_method_", "")
+    
+    methods = load_withdrawal_methods()
+    method_data = methods.get(method_key, {})
+    
+    if not method_data.get("enabled", True):
+        msg = "❌ طريقة السحب هذه غير متاحة حالياً" if lang == "ar" else "❌ This withdrawal method is not available"
+        bot.answer_callback_query(call.id, msg, show_alert=True)
+        return
+    
+    method_name = method_data.get(f"name_{lang}", method_data.get("name_en", method_key))
+    details_prompt = method_data.get(f"details_{lang}", method_data.get("details_en", "Account details"))
+    
+    user_states[user_id] = {"action": "withdraw_details", "method": method_name, "method_key": method_key}
+    
+    if lang == "ar":
+        text = f"📝 أرسل <b>{details_prompt}</b> الخاص بك لـ {method_name}:"
+    else:
+        text = f"📝 Send your <b>{details_prompt}</b> for {method_name}:"
+    
+    bot.send_message(call.message.chat.id, text, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_admins_menu")
+def admin_admins_menu_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🔧 إضافة مشرف", callback_data="admin_add_admin", style="success"),
+        InlineKeyboardButton("🗑 حذف مشرف", callback_data="admin_remove_admin", style="danger")
+    )
+    markup.add(
+        InlineKeyboardButton("🚫 حظر مستخدم", callback_data="admin_ban_user", style="danger"),
+        InlineKeyboardButton("✅ إلغاء حظر", callback_data="admin_unban_user", style="success")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel", style="danger"))
+    
+    bot.edit_message_text(
+        "👥 <b>إدارة المشرفين والمستخدمين</b>\n\nاختر الإجراء المطلوب:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_channels_menu")
+def admin_channels_menu_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("➕ إضافة قناة", callback_data="admin_add_channel", style="success"),
+        InlineKeyboardButton("🗑 حذف قناة", callback_data="admin_remove_channel", style="danger")
+    )
+    markup.add(
+        InlineKeyboardButton("📊 القنوات المضافة", callback_data="admin_list_channels", style="primary")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel", style="danger"))
+    
+    bot.edit_message_text(
+        "📢 <b>إدارة القنوات</b>\n\nاختر الإجراء المطلوب:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_countries_menu")
+def admin_countries_menu_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("➕ إضافة دولة", callback_data="admin_add_country", style="success"),
+        InlineKeyboardButton("➖ حذف دولة", callback_data="admin_remove_country", style="danger")
+    )
+    markup.add(
+        InlineKeyboardButton("📋 الدول المتاحة", callback_data="admin_list_countries", style="primary")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel", style="danger"))
+    
+    bot.edit_message_text(
+        "🌍 <b>إدارة الدول</b>\n\nاختر الإجراء المطلوب:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_groups_menu")
+def admin_groups_menu_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("➕ إضافة جروب", callback_data="admin_add_group_start", style="success"),
+        InlineKeyboardButton("➖ حذف جروب", callback_data="admin_remove_group", style="danger")
+    )
+    markup.add(
+        InlineKeyboardButton("📋 عرض الجروبات", callback_data="admin_list_groups", style="primary")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel", style="danger"))
+    
+    bot.edit_message_text(
+        "📱 <b>إدارة الجروبات</b>\n\nاختر الإجراء المطلوب:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_add_group_start")
+def admin_add_group_start_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add(KeyboardButton("🔘 اختر جروب", request_chat=telebot.types.KeyboardButtonRequestChat(request_id=1, chat_is_channel=False)))
+    
+    bot.send_message(
+        call.message.chat.id,
+        "➕ <b>إضافة جروب جديد</b>\n\n"
+        "إضغط على الزر بالأسفل لاختيار الجروب أو أرسل ID الجروب مباشرة:",
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+    user_states[user_id] = {"action": "add_group"}
+
+@bot.message_handler(func=lambda message: user_states.get(message.from_user.id, {}).get("action") == "add_group", content_types=['text', 'chat_shared'])
+def handle_add_group_message(message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        return
+
+    group_id = None
+    if message.content_type == 'chat_shared':
+        group_id = message.chat_shared.chat_id
+    else:
+        text = message.text.strip()
+        if text.startswith('-') and text[1:].isdigit() or text.isdigit():
+            group_id = int(text)
+    
+    if group_id:
+        if group_id not in GROUPS:
+            GROUPS.append(group_id)
+            save_groups()
+            bot.send_message(message.chat.id, f"✅ تم إضافة الجروب بنجاح!\nID: <code>{group_id}</code>", parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
+        else:
+            bot.send_message(message.chat.id, "⚠️ هذا الجروب مضاف بالفعل.", reply_markup=ReplyKeyboardRemove())
+        user_states[user_id] = {}
+    else:
+        bot.send_message(message.chat.id, "❌ ID غير صالح. يرجى إرسال ID صحيح أو اختيار جروب من الزر.")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_add_group")
+def admin_add_group_callback(call):
+   
+    admin_add_group_start_callback(call)
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_remove_group")
+def admin_remove_group_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    if not GROUPS:
+        bot.answer_callback_query(call.id, "⚠️ لا توجد جروبات مضافة", show_alert=True)
+        return
+    
+    groups_list = "\n".join([f"• <code>{gid}</code>" for gid in GROUPS])
+    
+    user_states[user_id] = {"action": "remove_group"}
+    
+    bot.send_message(
+        call.message.chat.id,
+        f"🗑 <b>حذف جروب</b>\n\n"
+        f"<b>الجروبات المضافة:</b>\n{groups_list}\n\n"
+        f"أرسل ID الجروب الذي تريد حذفه:",
+        parse_mode="HTML"
+    )
+
+@bot.message_handler(func=lambda message: user_states.get(message.from_user.id, {}).get("action") == "remove_group")
+def handle_remove_group_message(message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        return
+
+    try:
+        group_id = int(message.text.strip())
+        if group_id in GROUPS:
+            GROUPS.remove(group_id)
+            save_groups()
+            bot.send_message(message.chat.id, f"✅ تم حذف الجروب <code>{group_id}</code> بنجاح!", parse_mode="HTML")
+        else:
+            bot.send_message(message.chat.id, "❌ هذا الجروب غير موجود في القائمة.")
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ يرجى إرسال ID صحيح (رقم).")
+    
+    user_states[user_id] = {}
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_list_groups")
+def admin_list_groups_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    if not GROUPS:
+        bot.answer_callback_query(call.id, "⚠️ لا توجد جروبات مضافة", show_alert=True)
+        return
+    
+    groups_text = "📋 <b>الجروبات المضافة:</b>\n\n"
+    for idx, gid in enumerate(GROUPS, 1):
+        try:
+            chat = bot.get_chat(gid)
+            groups_text += f"{idx}. <b>{chat.title}</b>\n"
+            groups_text += f"   🆔 <code>{gid}</code>\n\n"
+        except:
+            groups_text += f"{idx}. جروب غير معروف\n"
+            groups_text += f"   🆔 <code>{gid}</code>\n\n"
+    
+    bot.send_message(call.message.chat.id, groups_text, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_broadcast_menu")
+def admin_broadcast_menu_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("📣 إذاعة", callback_data="admin_broadcast_normal", style="primary"),
+        InlineKeyboardButton("📤 إذاعة توجيهية", callback_data="admin_broadcast_forward", style="primary")
+    )
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel", style="danger"))
+    
+    bot.edit_message_text(
+        "📣 <b>نظام الإذاعة</b>\n\n"
+        "اختر نوع الإذاعة:\n\n"
+        "• <b>إذاعة:</b> رسالة جديدة لكل مستخدم\n"
+        "• <b>إذاعة توجيهية:</b> إعادة توجيه رسالتك",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_broadcast_normal")
+def admin_broadcast_normal_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id): return
+    broadcast_state[user_id] = {"type": "normal", "step": "waiting_message"}
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔙 إلغاء", callback_data="cancel_broadcast", style="danger"))
+    bot.send_message(call.message.chat.id, "📣 <b>إذاعة عادية</b>\n\nأرسل الرسالة التي تريد إذاعتها:", parse_mode="HTML", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_broadcast_forward")
+def admin_broadcast_forward_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id): return
+    broadcast_state[user_id] = {"type": "forward", "step": "waiting_message"}
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔙 إلغاء", callback_data="cancel_broadcast", style="danger"))
+    bot.send_message(call.message.chat.id, "📤 <b>إذاعة توجيهية</b>\n\nأرسل الرسالة التي تريد توجيهها:", parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(func=lambda msg: msg.from_user.id in broadcast_state and broadcast_state[msg.from_user.id].get("step") == "waiting_message", content_types=["text", "photo", "video", "document"])
+def handle_broadcast_message(msg):
+    user_id = msg.from_user.id
+    state = broadcast_state[user_id]
+    state["step"] = "confirm"
+    state["message"] = msg
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("✅ تأكيد الإرسال", callback_data="confirm_broadcast", style="success"), InlineKeyboardButton("❌ إلغاء", callback_data="cancel_broadcast", style="danger"))
+    bot.reply_to(msg, "❓ <b>هل أنت متأكد من إرسال هذه الرسالة للجميع؟</b>", parse_mode="HTML", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "confirm_broadcast")
+def confirm_broadcast_callback(call):
+    user_id = call.from_user.id
+    if user_id not in broadcast_state: return
+    state = broadcast_state[user_id]
+    msg = state["message"]
+    success, failed = 0, 0
+    progress = bot.send_message(call.message.chat.id, "⏳ جاري الإرسال...")
+    for uid in list(USERS.keys()):
+        try:
+            if state["type"] == "forward":
+                bot.forward_message(int(uid), msg.chat.id, msg.message_id)
+            else:
+                bot.copy_message(int(uid), msg.chat.id, msg.message_id)
+            success += 1
+        except: failed += 1
+    bot.delete_message(progress.chat.id, progress.message_id)
+    bot.send_message(call.message.chat.id, f"✅ <b>تم الإرسال!</b>\n\n📊 نجح: {success}\n❌ فشل: {failed}", parse_mode="HTML")
+    del broadcast_state[user_id]
+
+def send_saved_message(target_bot, target_uid, saved_msg):
+    
+    content_type = saved_msg.get("content_type")
+    
+    if content_type == "text":
+        target_bot.send_message(target_uid, saved_msg.get("text"), parse_mode="HTML" if saved_msg.get("has_entities") else None)
+    elif content_type == "photo":
+        target_bot.send_photo(target_uid, saved_msg.get("file_id"), caption=saved_msg.get("caption"))
+    elif content_type == "video":
+        target_bot.send_video(target_uid, saved_msg.get("file_id"), caption=saved_msg.get("caption"))
+    elif content_type == "document":
+        target_bot.send_document(target_uid, saved_msg.get("file_id"), caption=saved_msg.get("caption"))
+    elif content_type == "audio":
+        target_bot.send_audio(target_uid, saved_msg.get("file_id"), caption=saved_msg.get("caption"))
+    elif content_type == "voice":
+        target_bot.send_voice(target_uid, saved_msg.get("file_id"), caption=saved_msg.get("caption"))
+    elif content_type == "sticker":
+        target_bot.send_sticker(target_uid, saved_msg.get("file_id"))
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
+def back_to_main_callback(call):
+    user_id = call.from_user.id
+    lang = get_user_language(user_id)
+    settings = load_referral_settings()
+    code_bonus = settings.get("code_bonus", 0.01)
+    
+    markup = get_country_buttons(user_id)
+    if markup:
+        if lang == "ar":
+            title = f"<tg-emoji emoji-id='5972277098830634724'>🚨</tg-emoji> <b>اختر المنصة</b>\n\n<tg-emoji emoji-id='6046356449938905522'>💰</tg-emoji> ستربح <b>${format_decimal(code_bonus)}</b> عند كل كود تستلمه!"
+        else:
+            title = f"<tg-emoji emoji-id='5972277098830634724'>🚨</tg-emoji> <b>Select Country</b>\n\n💰 You'll earn <b>${format_decimal(code_bonus)}</b> for each code received!"
+        
+        try:
+            bot.edit_message_text(
+                title,
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+        except:
+            pass
+    else:
+        try:
+            text = t(user_id, "welcome")
+            if not text: text = "🌐 <b>مرحباً بك!</b>"
+            bot.edit_message_text(
+                text,
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="HTML",
+                reply_markup=get_main_menu_lang(user_id)
+            )
+        except:
+            pass
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_add_country")
+def admin_add_country_callback(call):
+    user_id = call.from_user.id
+
+    if not is_admin(user_id):
+        return
+
+    user_states[user_id] = {"action": "na_add_country_file"}
+
+    bot.send_message(
+        call.message.chat.id,
+        "📝 <b>إضافة دولة جديدة - الخطوة 1/3</b>\n\n"
+        "📤 أرسل ملف الأرقام (.txt)\n\n"
+        "<i>سيتم تنظيف الملف تلقائياً واستخراج الأرقام فقط من كل سطر</i>",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_remove_country")
+def admin_remove_country_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    if not COUNTRIES:
+        bot.answer_callback_query(call.id, "❌ لا توجد دول مضافة!", show_alert=True)
+        return
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    
+    for cid in sorted(COUNTRIES.keys()):
+        info = COUNTRIES[cid]
+        cname = info.get("display_name", cid)
+        flag = info.get("flag", "🌍")
+        count = info.get("numbers_count", 0)
+        markup.add(InlineKeyboardButton(f"❌ {flag} {cname} ({count})", callback_data=f"delete_country_btn_{cid}"))
+    
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel", style="danger"))
+    
+    bot.edit_message_text(
+        "🗑 <b>حذف دولة</b>\n\nاختر الدولة التي تريد حذفها من القائمة بالأسفل:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("delete_country_btn_"))
+def delete_country_confirm_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    country_name = call.data.replace("delete_country_btn_", "")
+    if country_name in COUNTRIES:
+        
+        file_path = COUNTRIES[country_name].get("file")
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except:
+                pass
+        
+        del COUNTRIES[country_name]
+        save_countries()
+        bot.answer_callback_query(call.id, f"✅ تم حذف {country_name} بنجاح!", show_alert=True)
+        
+        admin_remove_country_callback(call)
+    else:
+        bot.answer_callback_query(call.id, "❌ هذه الدولة غير موجودة!", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_list_countries")
+def admin_list_countries_callback(call):
+    user_id = call.from_user.id
+
+    if not is_admin(user_id):
+        return
+
+    if not COUNTRIES:
+        bot.answer_callback_query(call.id, "⚠️ لا توجد دول مضافة حالياً", show_alert=True)
+        return
+
+    countries_text = "📋 <b>الدول المتاحة:</b>\n\n"
+    for cid, info in COUNTRIES.items():
+        cname = info.get("display_name", cid)
+        countries_text += f"🌍 <b>{cname}</b> {info.get('flag', '🌐')}\n"
+        countries_text += f"   🆔 المعرف: <code>{cid}</code>\n"
+        countries_text += f"   📊 الأرقام: {info.get('numbers_count', 0)}\n"
+        countries_text += f"   ⚙️ الخدمة: {info.get('service', 'N/A')}\n"
+        countries_text += f"   📄 الملف: {info.get('file', 'N/A')}\n"
+        if info.get('server'):
+            countries_text += f"   🖥️ السيرفر: {info.get('server')}\n"
+        if info.get('platforms'):
+            countries_text += f"   📱 المنصات: {', '.join(info.get('platforms', []))}\n"
+        countries_text += "\n"
+
+    bot.send_message(call.message.chat.id, countries_text, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("add_country_srv_"))
+def add_country_server_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    if user_id not in user_states or user_states[user_id].get("action") != "add_country_server":
+        bot.answer_callback_query(call.id, "❌ انتهت الجلسة!", show_alert=True)
+        return
+    
+    server = call.data.replace("add_country_srv_", "")
+    state = user_states[user_id]
+    
+    user_states[user_id] = {
+        "action": "add_country_platforms",
+        "temp_file": state.get("temp_file"),
+        "country_code": state.get("country_code"),
+        "country_name": state.get("country_name"),
+        "num_cleaned": state.get("num_cleaned"),
+        "server": server,
+        "selected_platforms": []
+    }
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("📘 Facebook", callback_data="add_country_plt_Facebook", style="primary"),
+        InlineKeyboardButton("💬 WhatsApp", callback_data="add_country_plt_WhatsApp", style="success")
+    )
+    markup.add(
+        InlineKeyboardButton("✈️ Telegram", callback_data="add_country_plt_Telegram", style="primary"),
+        InlineKeyboardButton("📸 Instagram", callback_data="add_country_plt_Instagram", style="danger")
+    )
+    markup.add(
+        InlineKeyboardButton("🐦 Twitter/X", callback_data="add_country_plt_Twitter", style="primary"),
+        InlineKeyboardButton("📱 TikTok", callback_data="add_country_plt_TikTok", style="success")
+    )
+    markup.add(
+        InlineKeyboardButton("🎮 Discord", callback_data="add_country_plt_Discord", style="danger"),
+        InlineKeyboardButton("📧 Gmail", callback_data="add_country_plt_Gmail", style="primary")
+    )
+    markup.add(
+        InlineKeyboardButton("🌐 جميع المنصات", callback_data="add_country_plt_ALL", style="success")
+    )
+    markup.add(InlineKeyboardButton("✅ تأكيد وإنهاء", callback_data="add_country_finish", style="success"))
+    markup.add(InlineKeyboardButton("❌ إلغاء", callback_data="admin_countries", style="primary"))
+    
+    server_names = {
+        "GROUP": "🏢 GROUP",
+        "Fly sms": "🔷 Fly sms",
+        "Number_Panel": "📱 Number Panel",
+        "Bolt": "⚡ Bolt",
+        "iVASMS": "🌐 iVASMS"
+    }
+    
+    bot.edit_message_text(
+        f"✅ <b>الخطوة 5/5 - اختيار المنصات</b>\n\n"
+        f"🌍 الدولة: <b>{state.get('country_name')}</b>\n"
+        f"🔢 رمز الدولة: <b>{state.get('country_code')}</b>\n"
+        f"🖥️ السيرفر: <b>{server_names.get(server, server)}</b>\n\n"
+        f"📱 <b>المنصات المختارة:</b> لا يوجد\n\n"
+        f"اختر المنصات التي تعمل عليها هذه الأرقام:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("add_country_plt_"))
+def add_country_platform_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    if user_id not in user_states or user_states[user_id].get("action") != "add_country_platforms":
+        bot.answer_callback_query(call.id, "❌ انتهت الجلسة!", show_alert=True)
+        return
+    
+    platform = call.data.replace("add_country_plt_", "")
+    state = user_states[user_id]
+    selected_platforms = state.get("selected_platforms", [])
+    
+    if platform == "ALL":
+        selected_platforms = ["Facebook", "WhatsApp", "Telegram", "Instagram", "Twitter", "TikTok", "Discord", "Gmail"]
+    elif platform in selected_platforms:
+        selected_platforms.remove(platform)
+    else:
+        selected_platforms.append(platform)
+    
+    user_states[user_id]["selected_platforms"] = selected_platforms
+    
+    platform_icons = {
+        "Facebook": "📘", "WhatsApp": "💬", "Telegram": "✈️",
+        "Instagram": "📸", "Twitter": "🐦", "TikTok": "📱",
+        "Discord": "🎮", "Gmail": "📧"
+    }
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    
+    def get_btn_text(name, icon):
+        check = "✅" if name in selected_platforms else ""
+        return f"{check} {icon} {name}"
+    
+    markup.add(
+        InlineKeyboardButton(get_btn_text("Facebook", "📘"), callback_data="add_country_plt_Facebook"),
+        InlineKeyboardButton(get_btn_text("WhatsApp", "💬"), callback_data="add_country_plt_WhatsApp")
+    )
+    markup.add(
+        InlineKeyboardButton(get_btn_text("Telegram", "✈️"), callback_data="add_country_plt_Telegram"),
+        InlineKeyboardButton(get_btn_text("Instagram", "📸"), callback_data="add_country_plt_Instagram")
+    )
+    markup.add(
+        InlineKeyboardButton(get_btn_text("Twitter", "🐦"), callback_data="add_country_plt_Twitter"),
+        InlineKeyboardButton(get_btn_text("TikTok", "📱"), callback_data="add_country_plt_TikTok")
+    )
+    markup.add(
+        InlineKeyboardButton(get_btn_text("Discord", "🎮"), callback_data="add_country_plt_Discord"),
+        InlineKeyboardButton(get_btn_text("Gmail", "📧"), callback_data="add_country_plt_Gmail")
+    )
+    markup.add(
+        InlineKeyboardButton("🌐 جميع المنصات", callback_data="add_country_plt_ALL", style="success")
+    )
+    markup.add(InlineKeyboardButton("✅ تأكيد وإنهاء", callback_data="add_country_finish", style="success"))
+    markup.add(InlineKeyboardButton("❌ إلغاء", callback_data="admin_countries", style="danger"))
+    
+    server_names = {
+        "GROUP": "🏢 GROUP",
+        "Fly sms": "🔷 Fly sms",
+        "Number_Panel": "📱 Number Panel",
+        "Bolt": "⚡ Bolt",
+        "iVASMS": "🌐 iVASMS"
+    }
+    
+   
+    platform_icons = {
+        "Facebook": "📘", "WhatsApp": "💬", "Telegram": "✈️",
+        "Instagram": "📸", "Twitter": "🐦", "TikTok": "📱",
+        "Discord": "🎮", "Gmail": "📧"
+    }
+    
+    platforms_text = ", ".join([f"{platform_icons.get(p, '📱')} {p}" for p in selected_platforms]) if selected_platforms else "لا يوجد"
+    
+    try:
+        bot.edit_message_text(
+            f"✅ <b>الخطوة 5/5 - اختيار المنصات</b>\n\n"
+            f"🌍 الدولة: <b>{state.get('country_name')}</b>\n"
+            f"🔢 رمز الدولة: <b>{state.get('country_code')}</b>\n"
+            f"🖥️ السيرفر: <b>{server_names.get(state.get('server'), state.get('server'))}</b>\n\n"
+            f"📱 <b>المنصات المختارة:</b> {platforms_text}\n\n"
+            f"اختر المنصات التي تعمل عليها هذه الأرقام:",
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=markup
+        )
+    except:
+        pass
+    
+    bot.answer_callback_query(call.id)
+
+def format_otp_message(number, sms_text, service_name="[TG]", otp_code=None, user_id=None, is_group=False):
+    country_name, flag, region_code = detect_country_from_number(number, user_id)
+    masked = mask_number(number)
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+   
+    service_upper = str(service_name).replace("[", "").replace("]", "").upper()
+    shorthand = service_upper
+    
+    if is_group:
+        SHORTHANDS = {
+            "WHATSAPP": "<tg-emoji emoji-id='5188683998125106802'>📞</tg-emoji>",
+            "TELEGRAM": "TG",
+            "FACEBOOK": "FB",
+            "INSTAGRAM": "IG",
+            "TIKTOK": "TK",
+            "TWITTER": "TW",
+            "GOOGLE": "GG",
+            "MICROSOFT": "MS",
+            "NETFLIX": "NF",
+            "STEAM": "ST",
+            "SNAPCHAT": "SC",
+            "VIBER": "VB",
+            "IMO": "IM",
+            "WECHAT": "WC",
+            "LINE": "LN",
+            "DISCORD": "DC",
+            "PAYPAL": "PP",
+            "AMAZON": "AZ",
+            "EBAY": "EB",
+            "APPLE": "AP"
+        }
+
+        for key, val in SHORTHANDS.items():
+            if key in service_upper:
+                shorthand = val
+                break
+                
+        if shorthand == service_upper and len(shorthand) > 3:
+            shorthand = shorthand[:2]
+        
+    service_display = f"[{shorthand}]"
+    
+    header = f"──────────────╖ \n↠ {flag} #{region_code} {service_display} {masked} ┨\n──────────────╛"
+    
+    body = f"<blockquote>{sms_text}</blockquote>"
+    time_footer = f"<blockquote>• ⏰ ~ {now_str}</blockquote>"
+    
+    return f"{header}\n{body}\n{time_footer}"
+
+@bot.callback_query_handler(func=lambda call: call.data == "add_country_finish")
+def add_country_finish_callback(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id): return
+    if user_id not in user_states or user_states[user_id].get("action") != "add_country_platforms":
+        bot.answer_callback_query(call.id, "❌ انتهت الجلسة!", show_alert=True)
+        return
+    
+    state = user_states[user_id]
+    temp_file = state.get("temp_file")
+    server = state.get("server")
+    selected_platforms = state.get("selected_platforms", ["WhatsApp"])
+    
+    bot.edit_message_text("🔍 جاري فحص الملف وتحديد الدولة تلقائياً...", call.message.chat.id, call.message.message_id)
+    
+    prefix = detect_country_code_from_file(temp_file)
+    if not prefix:
+        bot.send_message(call.message.chat.id, "❌ لم أتمكن من تحديد رمز الدولة من الملف.")
+        return
+
+    country_name, flag, region_code = detect_country_from_number(prefix)
+    count, total, rejected = clean_and_filter_numbers(temp_file, prefix)
+    
+    if count == 0:
+        bot.send_message(call.message.chat.id, f"❌ الملف لا يحتوي على أرقام تبدأ بـ +{prefix}")
+        return
+
+    final_country_name = country_name
+    if region_code == "EG": final_country_name = "مصر"
+    
+    final_filename = f"numbers_{prefix}_{uuid.uuid4().hex[:8]}.txt"
+    if os.path.exists(temp_file):
+        os.rename(temp_file, final_filename)
+
+    
+    unique_id = uuid.uuid4().hex[:12]
+    country_id = f"{final_country_name}_{unique_id}"
+    
+    
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    final_filename = f"numbers_{prefix}_{timestamp_str}_{unique_id}.txt"
+    
+    if os.path.exists(temp_file):
+        
+        while os.path.exists(final_filename):
+            unique_id = uuid.uuid4().hex[:12]
+            final_filename = f"numbers_{prefix}_{timestamp_str}_{unique_id}.txt"
+            country_id = f"{final_country_name}_{unique_id}"
+            
+        os.rename(temp_file, final_filename)
+        print(f"✅ تم حفظ الملف باسم فريد: {final_filename}")
+
+    COUNTRIES[country_id] = {
+        "display_name": final_country_name,
+        "file": final_filename,
+        "code": prefix,
+        "flag": flag,
+        "server": server,
+        "platforms": selected_platforms,
+        "numbers_count": count,
+        "added_by": user_id,
+        "added_at": datetime.now().isoformat()
+    }
+    
+   
+    with open(COUNTRIES_FILE, "w", encoding="utf-8") as f:
+        json.dump(COUNTRIES, f, indent=2, ensure_ascii=False)
+    
+    del user_states[user_id]
+    bot.send_message(
+        call.message.chat.id,
+        f"✅ <b>تم إضافة الدولة بنجاح!</b>\n\n"
+        f"🌍 الدولة: {flag} {final_country_name} (#{region_code})\n"
+        f"🔢 الرمز: +{prefix}\n"
+        f"📱 العدد: {count} رقم\n"
+        f"🖥 السيرفر: {server}\n"
+        f"✨ تم التحديد تلقائياً من محتوى الملف",
+        parse_mode="HTML"
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_add_channel")
+def admin_add_channel_callback(call):
+    user_id = call.from_user.id
+
+    if not is_admin(user_id):
+        return
+
+    user_states[user_id] = {"action": "add_channel"}
+
+    bot.send_message(
+        call.message.chat.id,
+        "📢 <b>إضافة قناة اشتراك إجباري</b>\n\n"
+        "أرسل رابط القناة أو معرفها:\n\n"
+        "<b>أمثلة:</b>\n"
+        "• <code>@new_OTP_Group</code>\n"
+        "• <code>https://t.me/alorhawa</code>\n"
+        "• <code>-1003591777442</code> (ID)\n\n"
+        "<b>ملاحظة:</b> يجب أن يكون البوت مشرفاً في القناة!",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_remove_channel")
+def admin_remove_channel_callback(call):
+    user_id = call.from_user.id
+
+    if not is_admin(user_id):
+        return
+
+    if not CHANNELS:
+        bot.answer_callback_query(call.id, "⚠️ لا توجد قنوات مضافة حالياً", show_alert=True)
+        return
+
+    channels_list = "\n".join([f"{idx+1}. {ch['name']} ({ch['username']})" for idx, ch in enumerate(CHANNELS)])
+
+    user_states[user_id] = {"action": "remove_channel"}
+
+    bot.send_message(
+        call.message.chat.id,
+        f"🗑 <b>حذف قناة</b>\n\n"
+        f"<b>القنوات المضافة:</b>\n{channels_list}\n\n"
+        f"أرسل رقم القناة التي تريد حذفها:",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_list_channels")
+def admin_list_channels_callback(call):
+    user_id = call.from_user.id
+
+    if not is_admin(user_id):
+        return
+
+    if not CHANNELS:
+        bot.answer_callback_query(call.id, "⚠️ لا توجد قنوات مضافة حالياً", show_alert=True)
+        return
+
+    channels_text = "📊 <b>القنوات المضافة:</b>\n\n"
+    for idx, ch in enumerate(CHANNELS, 1):
+        channels_text += f"{idx}. 📢 <b>{ch['name']}</b>\n"
+        channels_text += f"   🔗 {ch['username']}\n"
+        channels_text += f"   🆔 ID: <code>{ch['id']}</code>\n\n"
+
+    bot.send_message(call.message.chat.id, channels_text, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_add_admin")
+def admin_add_admin_callback(call):
+    user_id = call.from_user.id
+    if user_id != MAIN_ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ عذراً، المالك فقط يمكنه إضافة مشرفين!", show_alert=True)
+        return
+    user_states[user_id] = {"action": "add_admin"}
+    bot.send_message(call.message.chat.id, "🔧 <b>إضافة مشرف جديد</b>\n\nأرسل معرف المستخدم (User ID) الذي تريد جعله مشرفاً:", parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_remove_admin")
+def admin_remove_admin_callback(call):
+    user_id = call.from_user.id
+    if user_id != MAIN_ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ عذراً، المالك فقط يمكنه حذف مشرفين!", show_alert=True)
+        return
+    
+    admins_list = ""
+    for aid in ADMINS:
+        status = " (المالك 👑)" if aid == MAIN_ADMIN_ID else ""
+        admins_list += f"• <code>{aid}</code>{status}\n"
+    
+    user_states[user_id] = {"action": "remove_admin"}
+    bot.send_message(
+        call.message.chat.id, 
+        f"🗑 <b>حذف مشرف</b>\n\n📋 <b>المشرفون الحاليون:</b>\n{admins_list}\n\nأرسل معرف المشرف الذي تريد حذفه:", 
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_ban_user")
+def admin_ban_user_callback(call):
+    user_id = call.from_user.id
+
+    if not is_admin(user_id):
+        return
+
+    user_states[user_id] = {"action": "ban_user"}
+
+    bot.send_message(
+        call.message.chat.id,
+        "🚫 <b>حظر مستخدم</b>\n\n"
+        "أرسل ID المستخدم:",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_unban_user")
+def admin_unban_user_callback(call):
+    user_id = call.from_user.id
+
+    if not is_admin(user_id):
+        return
+
+    if not BANNED:
+        bot.answer_callback_query(call.id, "⚠️ لا يوجد مستخدمين محظورين!", show_alert=True)
+        return
+
+    banned_list = "\n".join([f"• <code>{uid}</code>" for uid in BANNED])
+
+    user_states[user_id] = {"action": "unban_user"}
+
+    bot.send_message(
+        call.message.chat.id,
+        f"✅ <b>إلغاء حظر مستخدم</b>\n\n"
+        f"<b>المحظورين:</b>\n{banned_list}\n\n"
+        f"أرسل ID المستخدم:",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_set_otp_group")
+def admin_set_otp_group_callback(call):
+    user_id = call.from_user.id
+
+    if not is_admin(user_id):
+        return
+
+    user_states[user_id] = {"action": "set_otp_group"}
+
+    bot.send_message(
+        call.message.chat.id,
+        "📬 <b>تعيين مجموعة OTP</b>\n\n"
+        "أرسل ID المجموعة التي سيتم إرسال رسائل OTP إليها:",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_accounts_menu")
+def admin_accounts_menu_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        bot.answer_callback_query(call.id, "⛔️ غير مصرح لك بالوصول", show_alert=True)
+        return
+    
+    bot.edit_message_text(
+        "👥 <b>إدارة الحسابات</b>\n\nاختر الموقع لإدارة حساباته:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=get_accounts_menu()
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("accounts_site_"))
+def accounts_site_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    site_key = call.data.replace("accounts_site_", "")
+    site_name = SETTINGS[site_key]["name"]
+    accounts = get_site_accounts(site_key)
+    
+    accounts_text = f"👥 <b>حسابات {site_name}</b>\n\n"
+    if accounts:
+        accounts_text += f"📊 عدد الحسابات: {len(accounts)}\n\n"
+        for idx, account in enumerate(accounts, 1):
+            username = account.get("username", "N/A")
+            accounts_text += f"{idx}. 👤 <code>{username}</code>\n"
+    else:
+        accounts_text += "⚠️ لا توجد حسابات مضافة\n"
+    
+    accounts_text += "\nاختر حساباً لعرض تفاصيله أو أضف حساباً جديداً:"
+    
+    bot.edit_message_text(
+        accounts_text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=get_site_accounts_menu(site_key)
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("view_account_"))
+def view_account_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    data = call.data.replace("view_account_", "")
+    parts = data.rsplit("_", 1)
+    if len(parts) < 2:
+        return
+    
+    site_key, account_id = parts[0], parts[1]
+    account = get_account_by_id(site_key, account_id)
+    
+    if not account:
+        bot.answer_callback_query(call.id, "❌ الحساب غير موجود", show_alert=True)
+        return
+    
+    site_name = SETTINGS[site_key]["name"]
+    full_id = account.get("id", "")
+    
+    account_text = (
+        f"👤 <b>تفاصيل الحساب - {site_name}</b>\n\n"
+        f"📛 <b>اليوزر:</b> <code>{account.get('username', 'N/A')}</code>\n"
+        f"🔑 <b>الباسورد:</b> <code>{account.get('password', 'N/A')}</code>\n"
+        f"🆔 <b>ID:</b> <code>{full_id[:8]}...</code>\n"
+    )
+    
+    bot.edit_message_text(
+        account_text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=get_account_details_menu(site_key, full_id)
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("add_account_"))
+def add_account_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    site_key = call.data.replace("add_account_", "")
+    site_name = SETTINGS[site_key]["name"]
+    
+    user_states[user_id] = {"action": "add_account_username", "site_key": site_key}
+    
+    bot.send_message(
+        call.message.chat.id,
+        f"➕ <b>إضافة حساب جديد - {site_name}</b>\n\n"
+        f"📝 الخطوة 1/2: أرسل اسم المستخدم (Username):",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("delete_account_"))
+def delete_account_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    data = call.data.replace("delete_account_", "")
+    parts = data.rsplit("_", 1)
+    if len(parts) < 2:
+        return
+    
+    site_key, account_id = parts[0], parts[1]
+    site_name = SETTINGS[site_key]["name"]
+    account = get_account_by_id(site_key, account_id)
+    
+    if not account:
+        bot.answer_callback_query(call.id, "❌ الحساب غير موجود", show_alert=True)
+        return
+    
+    accounts = get_site_accounts(site_key)
+    if len(accounts) <= 1:
+        bot.answer_callback_query(
+            call.id, 
+            "⚠️ لا يمكن حذف الحساب الوحيد!\nيجب أن يبقى حساب واحد على الأقل لكل موقع.", 
+            show_alert=True
+        )
+        return
+    
+    username = account.get("username", "N/A")
+    full_id = account.get("id", "")
+    success = delete_account(site_key, full_id)
+    
+    if success:
+        bot.answer_callback_query(call.id, f"✅ تم حذف الحساب {username} بنجاح!", show_alert=True)
+        
+        accounts = get_site_accounts(site_key)
+        accounts_text = f"👥 <b>حسابات {site_name}</b>\n\n"
+        accounts_text += f"📊 عدد الحسابات: {len(accounts)}\n\n"
+        for idx, acc in enumerate(accounts, 1):
+            acc_username = acc.get("username", "N/A")
+            accounts_text += f"{idx}. 👤 <code>{acc_username}</code>\n"
+        accounts_text += "\nاختر حساباً لعرض تفاصيله أو أضف حساباً جديداً:"
+        
+        bot.edit_message_text(
+            accounts_text,
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=get_site_accounts_menu(site_key)
+        )
+    else:
+        bot.answer_callback_query(call.id, "❌ فشل حذف الحساب", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_sites_menu" or call.data == "admin")
+def sites_menu_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        bot.answer_callback_query(call.id, "⛔️ غير مصرح لك بالوصول", show_alert=True)
+        return
+    
+    if call.data == "admin":
+        bot.edit_message_text(
+            "🎛 <b>لوحة الإدارة</b>\n\nاختر الإجراء المطلوب:",
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=get_admin_menu()
+        )
+    else:
+        bot.edit_message_text(
+            "⚙️ <b>إعدادات المواقع</b>\n\nاختر الموقع لتعديل إعداداته:",
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=get_sites_menu()
+        )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("site_config_"))
+def site_config_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    site_key = call.data.replace("site_config_", "")
+    site_config = SETTINGS.get(site_key, {})
+    site_name = site_config.get("name", site_key)
+    accounts = get_site_accounts(site_key)
+    
+    if len(accounts) > 1:
+        accounts_text = f"⚙️ <b>إعدادات {site_name}</b>\n\n"
+        accounts_text += f"👥 <b>عدد الحسابات:</b> {len(accounts)}\n\n"
+        accounts_text += "اختر الحساب الذي تريد التحكم فيه:"
+        
+        bot.edit_message_text(
+            accounts_text,
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=get_site_accounts_selection_menu(site_key)
+        )
+    else:
+        first_account = accounts[0] if accounts else {"username": "N/A", "password": "", "id": ""}
+        account_id = first_account.get("id", "")
+        
+        info_text = (
+            f"⚙️ <b>إعدادات {site_name}</b>\n\n"
+            f"👤 <b>الحساب:</b> <code>{first_account.get('username', 'N/A')}</code>\n"
+            f"🔑 <b>الباسورد:</b> <code>{'*' * len(first_account.get('password', ''))}</code>\n"
+            f"⏱ <b>فترة البحث:</b> {site_config.get('check_interval', 0)} ثانية\n"
+            f"⏳ <b>وقت الانتظار:</b> {site_config.get('timeout', 0)} ثانية\n\n"
+            f"اختر الإجراء المطلوب:"
+        )
+        
+        bot.edit_message_text(
+            info_text,
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=get_site_config_menu(site_key, account_id)
+        )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("select_account_config_"))
+def select_account_config_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    data = call.data.replace("select_account_config_", "")
+    parts = data.rsplit("_", 1)
+    if len(parts) < 2:
+        return
+    
+    site_key, account_id = parts[0], parts[1]
+    site_config = SETTINGS.get(site_key, {})
+    site_name = site_config.get("name", site_key)
+    account = get_account_by_id(site_key, account_id)
+    
+    if not account:
+        bot.answer_callback_query(call.id, "❌ الحساب غير موجود", show_alert=True)
+        return
+    
+    info_text = (
+        f"⚙️ <b>إعدادات {site_name}</b>\n\n"
+        f"👤 <b>الحساب:</b> <code>{account.get('username', 'N/A')}</code>\n"
+        f"🔑 <b>الباسورد:</b> <code>{'*' * len(account.get('password', ''))}</code>\n"
+        f"⏱ <b>فترة البحث:</b> {site_config.get('check_interval', 0)} ثانية\n"
+        f"⏳ <b>وقت الانتظار:</b> {site_config.get('timeout', 0)} ثانية\n\n"
+        f"اختر الإجراء المطلوب:"
+    )
+    
+    bot.edit_message_text(
+        info_text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=get_site_config_menu(site_key, account_id)
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("site_change_user_"))
+def site_change_user_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    data_parts = call.data.replace("site_change_user_", "").rsplit("_", 1)
+    site_key = data_parts[0]
+    account_id = data_parts[1] if len(data_parts) > 1 else None
+    
+    # Handle TimeSMS special case for single account sites or direct access
+    if not account_id and site_key == "TimeSMS":
+        accounts = get_site_accounts(site_key)
+        if accounts:
+            account = accounts[0]
+            account_id = account.get("id", "")[:8]
+        else:
+            bot.answer_callback_query(call.id, "❌ لا يوجد حساب مسجل", show_alert=True)
+            return
+
+    account = get_account_by_id(site_key, account_id) if account_id else None
+    
+    if not account:
+        bot.answer_callback_query(call.id, "❌ الحساب غير موجود", show_alert=True)
+        return
+    
+    full_id = account.get("id", "")
+    
+    user_states[user_id] = {
+        "action": "change_site_username",
+        "site_key": site_key,
+        "account_id": full_id
+    }
+    
+    bot.send_message(
+        call.message.chat.id,
+        f"👤 <b>تغيير اليوزر - {site_name}</b>\n\n"
+        f"الحساب الحالي: <code>{account.get('username', 'N/A')}</code>\n\n"
+        f"أرسل اسم المستخدم الجديد:",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("site_change_pass_"))
+def site_change_pass_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    data_parts = call.data.replace("site_change_pass_", "").rsplit("_", 1)
+    # Handle TimeSMS special case for single account sites or direct access
+    if not account_id and site_key == "TimeSMS":
+        accounts = get_site_accounts(site_key)
+        if accounts:
+            account = accounts[0]
+            account_id = account.get("id", "")[:8]
+        else:
+            bot.answer_callback_query(call.id, "❌ لا يوجد حساب مسجل", show_alert=True)
+            return
+
+    account = get_account_by_id(site_key, account_id) if account_id else None
+    
+    if not account:
+        bot.answer_callback_query(call.id, "❌ الحساب غير موجود", show_alert=True)
+        return
+    
+    full_id = account.get("id", "")
+    
+    user_states[user_id] = {
+        "action": "change_site_password",
+        "site_key": site_key,
+        "account_id": full_id
+    }
+    
+    bot.send_message(
+        call.message.chat.id,
+        f"🔑 <b>تغيير الباسورد - {site_name}</b>\n\n"
+        f"الحساب: <code>{account.get('username', 'N/A')}</code>\n\n"
+        f"أرسل كلمة المرور الجديدة:",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("site_change_interval_"))
+def site_change_interval_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    site_key = call.data.replace("site_change_interval_", "")
+    site_name = SETTINGS[site_key]["name"]
+    current = SETTINGS[site_key]["check_interval"]
+    
+    user_states[user_id] = {"action": "change_site_interval", "site_key": site_key}
+    
+    bot.send_message(
+        call.message.chat.id,
+        f"⏱ <b>تغيير فترة البحث - {site_name}</b>\n\n"
+        f"📊 الفترة الحالية: {current} ثانية\n\n"
+        f"أرسل الفترة الجديدة بالثواني:",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("site_change_timeout_"))
+def site_change_timeout_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    site_key = call.data.replace("site_change_timeout_", "")
+    site_name = SETTINGS[site_key]["name"]
+    current = SETTINGS[site_key]["timeout"]
+    
+    user_states[user_id] = {"action": "change_site_timeout", "site_key": site_key}
+    
+    bot.send_message(
+        call.message.chat.id,
+        f"⏳ <b>تغيير وقت الانتظار - {site_name}</b>\n\n"
+        f"📊 الوقت الحالي: {current} ثانية\n\n"
+        f"أرسل الوقت الجديد بالثواني:",
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("site_test_login_"))
+def site_test_login_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    data_parts = call.data.replace("site_test_login_", "").rsplit("_", 1)
+    # Handle TimeSMS special case for single account sites or direct access
+    if not account_id and site_key == "TimeSMS":
+        accounts = get_site_accounts(site_key)
+        if accounts:
+            account = accounts[0]
+            account_id = account.get("id", "")[:8]
+        else:
+            bot.answer_callback_query(call.id, "❌ لا يوجد حساب مسجل", show_alert=True)
+            return
+
+    account = get_account_by_id(site_key, account_id) if account_id else None
+    
+    if not account:
+        bot.answer_callback_query(call.id, "❌ الحساب غير موجود", show_alert=True)
+        return
+    
+    bot.answer_callback_query(call.id, f"🔄 جاري اختبار تسجيل الدخول ل {account.get('username')}...")
+    
+    bot.send_message(
+        call.message.chat.id,
+        f"🔓 <b>اختبار تسجيل الدخول - {site_name}</b>\n\n"
+        f"👤 الحساب: <code>{account.get('username')}</code>\n\n"
+        f"⏳ جاري الاتصال والتحقق...",
+        parse_mode="HTML"
+    )
+    
+    Thread(target=test_site_login, args=(call.message.chat.id, site_key, account_id)).start()
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("site_test_fetch_"))
+def site_test_fetch_callback(call):
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    data_parts = call.data.replace("site_test_fetch_", "").rsplit("_", 1)
+    # Handle TimeSMS special case for single account sites or direct access
+    if not account_id and site_key == "TimeSMS":
+        accounts = get_site_accounts(site_key)
+        if accounts:
+            account = accounts[0]
+            account_id = account.get("id", "")[:8]
+        else:
+            bot.answer_callback_query(call.id, "❌ لا يوجد حساب مسجل", show_alert=True)
+            return
+
+    account = get_account_by_id(site_key, account_id) if account_id else None
+    
+    if not account:
+        bot.answer_callback_query(call.id, "❌ الحساب غير موجود", show_alert=True)
+        return
+    
+    bot.answer_callback_query(call.id, f"🔄 جاري جلب آخر كود من {account.get('username')}...")
+    
+    bot.send_message(
+        call.message.chat.id,
+        f"📥 <b>اختبار جلب الكود - {site_name}</b>\n\n"
+        f"👤 الحساب: <code>{account.get('username')}</code>\n\n"
+        f"⏳ جاري جلب آخر رسالة...",
+        parse_mode="HTML"
+    )
+    
+    Thread(target=test_site_fetch, args=(call.message.chat.id, site_key, account_id)).start()
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("country_"))
+def country_selection_callback(call):
+    user_id = call.from_user.id
+    lang = get_user_language(user_id)
+
+    if not check_subscription(user_id):
+        bot.answer_callback_query(call.id, "❌ Please subscribe to all channels first!", show_alert=True)
+        return
+
+    country_name = call.data.replace("country_", "")
+    
+    if country_name not in COUNTRIES:
+        bot.answer_callback_query(call.id, "❌ Country not found!", show_alert=True)
+        return
+
+    country_info = COUNTRIES.get(country_name, {})
+    flag = country_info.get("flag", "🌍")
+
+    number = get_random_number(country_name)
+
+    if not number:
+        bot.answer_callback_query(call.id, "❌ No numbers available for this country!", show_alert=True)
+        return
+
+    service_type = country_info.get("service", "WS")
+
+    display_number = f'+{number.lstrip("+")}'
+
+    old_data = USERS.get(str(user_id), {})
+    USERS[str(user_id)] = {
+        "selected_country": country_name,
+        "selected_number": number,
+        "flag": flag,
+        "service": service_type,
+        "platform": "General",
+        "joined": str(datetime.now()),
+        "activations": old_data.get("activations", 0),
+        "language": old_data.get("language", "ar"),
+        "join_date": old_data.get("join_date", datetime.now().strftime('%Y-%m-%d'))
+    }
+    save_users()
+
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+
+    links = load_button_links()
+    markup = InlineKeyboardMarkup(row_width=1)
+    change_number_text = "🔄 تغيير الرقم" if lang == "ar" else "🔄 Change Number"
+    change_country_text = "🌍 تغيير الدولة" if lang == "ar" else "🌍 Change Country"
+    change_number = InlineKeyboardButton(change_number_text, callback_data="change_number")
+    change_country = InlineKeyboardButton(change_country_text, callback_data="choose_country")
+    markup.add(change_number)
+    markup.add(change_country)
+    
+    group_link_text = "📢 جروب البوت" if lang == "ar" else "📢 Group Link"
+    group_link_btn = InlineKeyboardButton(group_link_text, url=links.get("group_link", "https://t.me/alorhawa"))
+    markup.add(group_link_btn)
+    
+    back_text = "🔙 القائمة الرئيسية" if lang == "ar" else "🔙 Back to Main"
+    markup.add(InlineKeyboardButton(back_text, callback_data="back_to_main"))
+
+   
+    user_lang = get_user_language(user_id)
+    platform = USERS.get(str(user_id), {}).get("platform", "General")
+    country_info = COUNTRIES.get(country_name, {})
+    country_code = country_info.get("code", "")
+    localized_country_name, _, _ = detect_country_from_number(country_code, user_id)
+    
+    if user_lang == "ar":
+        msg_text = (
+            f"<tg-emoji emoji-id='5972010570340112281'>😀</tg-emoji> <b>تم اختيار الرقم بنجاح!</b>\n\n"
+            f"<tg-emoji emoji-id='5224450179368767019'>🌎</tg-emoji> <b>الدولة:</b> {flag} {localized_country_name}\n"
+            f"<tg-emoji emoji-id='5782668844061430712'>🗣</tg-emoji> <b>المنصة:</b> {platform}\n"
+            f"<tg-emoji emoji-id='5453965363286925977'>📞</tg-emoji> <b>الرقم:</b> <code>{display_number}</code>\n\n"
+            f"<tg-emoji emoji-id='5458603043203327669'>😀</tg-emoji> ستستلم الرسائل تلقائياً عند وصولها"
+        )
+    else:
+        msg_text = (
+            f"<tg-emoji emoji-id='5972010570340112281'>😀</tg-emoji> <b>Number selected successfully!</b>\n\n"
+            f"<tg-emoji emoji-id='5224450179368767019'>🌎</tg-emoji> <b>Country:</b> {flag} {localized_country_name}\n"
+            f"<tg-emoji emoji-id='5782668844061430712'>🗣</tg-emoji> <b>Platform:</b> {platform}\n"
+            f"<tg-emoji emoji-id='5453965363286925977'>📞</tg-emoji> <b>Number:</b> <code>{display_number}</code>\n\n"
+            f"🔔 You will receive messages automatically when they arrive"
+        )
+
+    bot.send_message(
+        call.message.chat.id,
+        msg_text,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "change_number")
+def change_number_callback(call):
+    user_id = call.from_user.id
+    lang = get_user_language(user_id)
+
+    if not check_subscription(user_id):
+        bot.answer_callback_query(call.id, "❌ Please subscribe to all channels first!", show_alert=True)
+        return
+
+    user_data = USERS.get(str(user_id))
+    if not user_data:
+        bot.answer_callback_query(call.id, "❌ User data not found!", show_alert=True)
+        return
+        
+    country_name = user_data.get("country") or user_data.get("selected_country")
+    if not country_name:
+        bot.answer_callback_query(call.id, "❌ No country selected!", show_alert=True)
+        return
+    number = get_random_number(country_name)
+
+    if not number:
+        bot.answer_callback_query(call.id, "❌ No numbers available for this country!", show_alert=True)
+        return
+
+    country_info = COUNTRIES.get(country_name, {})
+    service_type = country_info.get("service", "WS")
+    flag = country_info.get("flag", "🌍")
+
+    display_number = f'+{number.lstrip("+")}'
+
+    USERS[str(user_id)]["selected_number"] = number
+    save_users()
+
+    links = load_button_links()
+    markup = InlineKeyboardMarkup(row_width=1)
+    change_number_text = "🔄 تغيير الرقم" if lang == "ar" else "🔄 Change Number"
+    change_country_text = "🌍 تغيير الدولة" if lang == "ar" else "🌍 Change Country"
+    change_number = InlineKeyboardButton(change_number_text, callback_data="change_number")
+    change_country = InlineKeyboardButton(change_country_text, callback_data="choose_country")
+    markup.add(change_number)
+    markup.add(change_country)
+    
+    group_link_text = "📢 جروب البوت" if lang == "ar" else "📢 Group Link"
+    group_link_btn = InlineKeyboardButton(group_link_text, url=links.get("group_link", "https://t.me/alorhawa"))
+    markup.add(group_link_btn)
+    
+    back_text = "🔙 القائمة الرئيسية" if lang == "ar" else "🔙 Back to Main"
+    markup.add(InlineKeyboardButton(back_text, callback_data="back_to_main"))
+
+    
+    user_lang = get_user_language(user_id)
+    platform = USERS.get(str(user_id), {}).get("platform", "General")
+    country_info = COUNTRIES.get(country_name, {})
+    country_code = country_info.get("code", "")
+    localized_country_name, _, _ = detect_country_from_number(country_code, user_id)
+    
+    if user_lang == "ar":
+        msg_text = (
+            f"<tg-emoji emoji-id='5972010570340112281'>😀</tg-emoji> <b>تم اختيار الرقم بنجاح!</b>\n\n"
+            f"<tg-emoji emoji-id='5224450179368767019'>🌎</tg-emoji> <b>الدولة:</b> {flag} {localized_country_name}\n"
+            f"<tg-emoji emoji-id='5782668844061430712'>🗣</tg-emoji> <b>المنصة:</b> {platform}\n"
+            f"<tg-emoji emoji-id='5453965363286925977'>📞</tg-emoji> <b>الرقم:</b> <code>{display_number}</code>\n\n"
+            f"<tg-emoji emoji-id='5458603043203327669'>😀</tg-emoji> ستستلم الرسائل تلقائياً عند وصولها"
+        )
+    else:
+        msg_text = (
+            f"✅ <b>Number selected successfully!</b>\n\n"
+            f"🌍 <b>Country:</b> {flag} {localized_country_name}\n"
+            f"<tg-emoji emoji-id='5782668844061430712'>🗣</tg-emoji> <b>Platform:</b> {platform}\n"
+            f"<tg-emoji emoji-id='5453965363286925977'>📞</tg-emoji> <b>Number:</b> <code>{display_number}</code>\n\n"
+            f"<tg-emoji emoji-id='5458603043203327669'>😀</tg-emoji> You will receive messages automatically when they arrive"
+        )
+
+    bot.edit_message_text(
+        msg_text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+    changed_text = "✅ تم تغيير الرقم!" if lang == "ar" else "✅ Number changed!"
+    bot.answer_callback_query(call.id, changed_text)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("select_plt_"))
+def select_platform_main_callback(call):
+    user_id = call.from_user.id
+    platform = call.data.replace("select_plt_", "")
+    lang = get_user_language(user_id)
+    
+    markup = get_countries_for_platform(platform, user_id)
+    if not markup:
+        bot.answer_callback_query(call.id, "❌ No countries available for this platform!", show_alert=True)
+        return
+    
+    title = f"🌍 <b>Choose Country for {platform}</b>" if lang != "ar" else f"🌍 <b>اختر الدولة لـ {platform}</b>"
+    bot.edit_message_text(title, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "choose_country")
+def choose_country_callback(call):
+    user_id = call.from_user.id
+
+    if not check_subscription(user_id):
+        bot.answer_callback_query(call.id, "❌ Please subscribe to all channels first!", show_alert=True)
+        return
+
+    
+    user_data = USERS.get(str(user_id), {})
+    platform = user_data.get("platform")
+    
+    if platform and platform != "General":
+        markup = get_countries_for_platform(platform, user_id)
+        if markup:
+            lang = get_user_language(user_id)
+            settings = load_referral_settings()
+            code_bonus = settings.get("code_bonus", 0.01)
+            
+            if lang == "ar":
+                title = f"🌍 <b>اختر الدولة لـ {platform}</b>\n\n💰 ستربح <b>${format_decimal(code_bonus)}</b> عند كل كود تستلمه!"
+            else:
+                title = f"🌍 <b>Select Country for {platform}</b>\n\n💰 You'll earn <b>${format_decimal(code_bonus)}</b> for each code received!"
+
+            bot.edit_message_text(title, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            return
+
+    
+    markup = get_platforms_list(user_id)
+
+    if not markup:
+        bot.answer_callback_query(call.id, "❌ No countries available!", show_alert=True)
+        return
+
+    lang = get_user_language(user_id)
+    settings = load_referral_settings()
+    code_bonus = settings.get("code_bonus", 0.01)
+    
+    if lang == "ar":
+        title = f"🌍 <b>اختر الدولة</b>\n\n<tg-emoji emoji-id='6046356449938905522'>💰</tg-emoji> ستربح <b>${format_decimal(code_bonus)}</b> عند كل كود تستلمه!"
+    else:
+        title = f"🌍 <b>Select Country</b>\n\n<tg-emoji emoji-id='6046356449938905522'>💰</tg-emoji> You'll earn <b>${format_decimal(code_bonus)}</b> for each code received!"
+
+    bot.edit_message_text(
+        title,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("platform_"))
+def select_platform_callback(call):
+    user_id = call.from_user.id
+
+    if not check_subscription(user_id):
+        bot.answer_callback_query(call.id, "❌ Please subscribe to all channels first!", show_alert=True)
+        return
+
+    parts = call.data.split("_", 2)
+    if len(parts) < 3:
+        bot.answer_callback_query(call.id, "❌ Invalid selection!", show_alert=True)
+        return
+    
+    country_name = parts[1]
+    platform = parts[2]
+    
+    if country_name not in COUNTRIES:
+        bot.answer_callback_query(call.id, "❌ Country not found!", show_alert=True)
+        return
+    
+    country_info = COUNTRIES[country_name]
+    selected_number = get_random_number(country_name)
+    
+    if not selected_number:
+        bot.answer_callback_query(call.id, "❌ No numbers available for this country!", show_alert=True)
+        return
+    
+    USERS[str(user_id)] = {
+        "selected_number": selected_number,
+        "selected_country": country_name,
+        "country": country_name,
+        "platform": platform,
+        "joined": str(datetime.now()),
+        "activations": USERS.get(str(user_id), {}).get("activations", 0),
+        "language": USERS.get(str(user_id), {}).get("language", "ar")
+    }
+    save_users()
+    
+    country_flag = country_info.get("flag", "🌍")
+    display_number = f'+{selected_number.lstrip("+")}'
+    user_lang = get_user_language(user_id)
+    localized_country_name, _, _ = detect_country_from_number(country_info.get("code", ""), user_id)
+    
+    if user_lang == "ar":
+        msg_text = (
+            f"<tg-emoji emoji-id='5972010570340112281'>😀</tg-emoji> <b>تم اختيار الرقم بنجاح!</b>\n\n"
+            f"<tg-emoji emoji-id='5224450179368767019'>🌎</tg-emoji> <b>الدولة:</b> {country_flag} {localized_country_name}\n"
+            f"<tg-emoji emoji-id='5782668844061430712'>🗣</tg-emoji> <b>المنصة:</b> {platform}\n"
+            f"<tg-emoji emoji-id='5453965363286925977'>📞</tg-emoji> <b>الرقم:</b> <code>{display_number}</code>\n\n"
+            f"<tg-emoji emoji-id='5458603043203327669'>😀</tg-emoji> <b>ستستلم الرسائل تلقائياً عند وصولها</b>"
+        )
+    else:
+        msg_text = (
+            f"<tg-emoji emoji-id='5972010570340112281'>😀</tg-emoji> <b>Number selected successfully!</b>\n\n"
+            f"<tg-emoji emoji-id='5224450179368767019'>🌎</tg-emoji> <b>Country:</b> {country_flag} {localized_country_name}\n"
+            f"<tg-emoji emoji-id='5782668844061430712'>🗣</tg-emoji> <b>Platform:</b> {platform}\n"
+            f"<tg-emoji emoji-id='5453965363286925977'>📞</tg-emoji> <b>Number:</b> <code>{display_number}</code>\n\n"
+            f"<tg-emoji emoji-id='5458603043203327669'>😀</tg-emoji> <b>You will receive messages automatically when they arrive</b>"
+        )
+    
+    bot.edit_message_text(
+        msg_text,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=create_message_buttons(user_id)
+    )
+
+@bot.message_handler(commands=["hom"])
+def hom_command(msg):
+    user_id = msg.from_user.id
+    lang = get_user_language(user_id)
+    
+    
+    if is_admin(user_id):
+        
+        settings = load_referral_settings()
+        code_bonus = settings.get("code_bonus", 0.01)
+        
+        if lang == "ar":
+            text = f"<tg-emoji emoji-id='5972277098830634724'>🚨</tg-emoji> <b>اختر المنصة</b>\n\n<tg-emoji emoji-id='6046356449938905522'>💰</tg-emoji> ستربح <b>${format_decimal(code_bonus)}</b> عند كل كود تستلمه!"
+        else:
+            text = f"<tg-emoji emoji-id='5972277098830634724'>🚨</tg-emoji> <b>Choose Platform</b>\n\n<tg-emoji emoji-id='6046356449938905522'>💰</tg-emoji> You'll earn <b>${format_decimal(code_bonus)}</b> for each code received!"
+            
+        markup = get_platforms_list(user_id)
+        bot.send_message(msg.chat.id, text, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if is_banned(user_id):
+        bot.reply_to(msg, t(user_id, "banned"))
+        return
+
+    text = t(user_id, "welcome")
+    if not text: text = "🌐 <b>مرحباً بك!</b>"
+    bot.send_message(
+        msg.chat.id,
+        text,
+        parse_mode="HTML",
+        reply_markup=get_main_menu_lang(user_id)
+    )
+
+def process_country_code_logic(msg, user_id, country_code, state):
+    
+    country_code = str(country_code).replace('+', '').strip()
+    
+   
+    import phonenumbers
+    from phonenumbers import COUNTRY_CODE_TO_REGION_CODE
+    
+    
+    potential_code = ""
+    for i in range(min(len(country_code), 4), 0, -1):
+        prefix = country_code[:i]
+        if int(prefix) in COUNTRY_CODE_TO_REGION_CODE:
+            potential_code = prefix
+            break
+            
+    if potential_code:
+        country_code = potential_code
+
+    if not country_code.isdigit():
+        bot.reply_to(msg, "❌ رمز الدولة يجب أن يحتوي على أرقام فقط!")
+        return
+
+    temp_file = state.get("temp_file")
+    if not temp_file or not os.path.exists(temp_file):
+        bot.reply_to(msg, "❌ لم يتم العثور على الملف! يرجى البدء من جديد.")
+        if user_id in user_states: del user_states[user_id]
+        return
+
+    try:
+        with open(temp_file, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+    except Exception as e:
+        bot.reply_to(msg, f"❌ خطأ في قراءة الملف: {e}")
+        return
+
+    cleaned_numbers = []
+    total_lines = 0
+    rejected_lines = 0
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        total_lines += 1
+        first_part = line.split()[0] if line.split() else line
+        digits_only = ''.join(c for c in first_part if c.isdigit())
+
+        if digits_only.startswith(country_code) and len(digits_only) >= 8:
+            cleaned_numbers.append(digits_only)
+        else:
+            rejected_lines += 1
+
+    num_cleaned = len(cleaned_numbers)
+
+    if num_cleaned == 0:
+        bot.reply_to(
+            msg,
+            f"❌ <b>لم يتم العثور على أي أرقام تبدأ برمز الدولة {country_code}!</b>\n\n"
+            f"📊 إجمالي الأسطر المعالجة: {total_lines}\n"
+            f"❌ أرقام مرفوضة: {rejected_lines}\n\n"
+            f"<i>تأكد من جودة الملف</i>",
+            parse_mode="HTML"
+        )
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        if user_id in user_states: del user_states[user_id]
+        return
+
+    cleanup_old_numbers_files(country_code)
+    
+    cleaned_filename = f"numbers_{country_code}_{uuid.uuid4().hex[:8]}.txt"
+    with open(cleaned_filename, "w", encoding="utf-8") as f:
+        for num in cleaned_numbers:
+            f.write(num + "\n")
+
+    if os.path.exists(temp_file):
+        os.remove(temp_file)
+
+    user_states[user_id] = {
+        "action": "na_add_country_name",
+        "numbers_file": cleaned_filename,
+        "country_code": country_code,
+        "num_cleaned": num_cleaned,
+        "total_lines": total_lines,
+        "rejected_lines": rejected_lines
+    }
+
+    bot.reply_to(
+        msg,
+        f"✅ <b>تم معالجة الملف تلقائياً!</b>\n\n"
+        f"📊 إجمالي الأسطر: <b>{total_lines}</b>\n"
+        f"✅ أرقام مقبولة: <b>{num_cleaned}</b>\n"
+        f"🔢 رمز الدولة المكتشف: <b>+{country_code}</b>\n\n"
+        f"🔍 <b>جاري تحديد الدولة تلقائياً...</b>",
+        parse_mode="HTML"
+    )
+
+   
+    country_name, flag, region_code = detect_country_from_number(country_code, user_id)
+    
+    
+    lang = get_user_language(user_id)
+    if lang == "ar":
+       
+        country_name_ar = geocoder.description_for_number(phonenumbers.parse("+" + country_code + "0000000"), "ar")
+        if country_name_ar:
+            country_name = country_name_ar
+
+    user_states[user_id] = {
+        "action": "na_add_country_platforms",
+        "numbers_file": cleaned_filename,
+        "country_code": country_code,
+        "country_name": country_name,
+        "num_cleaned": num_cleaned,
+        "server": "GROUP", 
+        "selected_platforms": []
+    }
+    
+   
+    lang = get_user_language(user_id)
+    markup = InlineKeyboardMarkup(row_width=2)
+    platforms = ["Facebook", "WhatsApp", "Telegram", "Instagram", "Twitter", "TikTok", "Discord", "Gmail"]
+    for p in platforms:
+        markup.add(InlineKeyboardButton(f"{p}", callback_data=f"na_add_country_plt_{p}"))
+    
+    edit_name_text = "✏️ تعديل الاسم" if lang == "ar" else "✏️ Edit Name"
+    confirm_text = "✅ إكمال" if lang == "ar" else "✅ Continue"
+    
+    markup.add(
+        InlineKeyboardButton(edit_name_text, callback_data="na_add_country_edit_name"),
+        InlineKeyboardButton(confirm_text, callback_data="na_add_country_finish")
+    )
+    
+    bot.send_message(
+        msg.chat.id,
+        f"🌍 تم تحديد الدولة: <b>{flag} {country_name} (+{country_code})</b>\n\n"
+        f"📱 اختر المنصات التي تعمل عليها هذه الأرقام:",
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+    return
+
+@bot.message_handler(content_types=["text", "document", "photo", "video", "audio", "voice", "sticker"])
+def handle_messages(msg):
+    user_id = msg.from_user.id
+    
+    if msg.chat.type != "private":
+        return
+
+    if user_id not in user_states and user_id not in broadcast_state:
+        return
+
+    state = user_states.get(user_id, {})
+    action = state.get("action")
+    mode = state.get("mode")
+    
+    if mode == "add_numbers_admin":
+        if msg.content_type != "text":
+            bot.reply_to(msg, "❌ يرجى إرسال معرف رقمي!")
+            return
+        
+        try:
+            new_admin_id = int(msg.text.strip())
+        except ValueError:
+            bot.reply_to(msg, "❌ المعرف يجب أن يكون رقماً!")
+            return
+        
+        if new_admin_id in NUMBERS_ADMINS:
+            bot.reply_to(msg, "⚠️ هذا المستخدم أدمن أرقام بالفعل!")
+        else:
+            NUMBERS_ADMINS.append(new_admin_id)
+            save_numbers_admins()
+            bot.reply_to(msg, f"✅ تم إضافة <code>{new_admin_id}</code> كأدمن أرقام!", parse_mode="HTML")
+        
+        del user_states[user_id]
+        return
+    
+    elif action == "na_add_country_edit_name_input":
+        new_name = msg.text.strip()
+        if not new_name:
+            bot.reply_to(msg, "❌ يرجى إرسال اسم صالح!")
+            return
+        
+        state["country_name"] = new_name
+        
+        lang = get_user_language(user_id)
+        markup = InlineKeyboardMarkup(row_width=2)
+        platforms = ["Facebook", "WhatsApp", "Telegram", "Instagram", "Twitter", "TikTok", "Discord", "Gmail"]
+        for p in platforms:
+            prefix = "✅ " if p in state.get("selected_platforms", []) else ""
+            markup.add(InlineKeyboardButton(f"{prefix}{p}", callback_data=f"na_add_country_plt_{p}"))
+        
+        edit_name_text = "✏️ تعديل الاسم" if lang == "ar" else "✏️ Edit Name"
+        confirm_text = "✅ إكمال" if lang == "ar" else "✅ Continue"
+        
+        markup.add(
+            InlineKeyboardButton(edit_name_text, callback_data="na_add_country_edit_name"),
+            InlineKeyboardButton(confirm_text, callback_data="na_add_country_finish")
+        )
+        
+        bot.send_message(
+            msg.chat.id,
+            f"✅ تم تحديث الاسم إلى: <b>{new_name}</b>\n\n"
+            f"📱 اختر المنصات التي تعمل عليها هذه الأرقام:",
+            parse_mode="HTML",
+            reply_markup=markup
+        )
+        state["action"] = "na_add_country_platforms"
+        return
+
+    elif action == "na_add_country_paste":
+        if msg.content_type != "text":
+            bot.reply_to(msg, "❌ يرجى إرسال الأرقام كنص!")
+            return
+        
+        text = msg.text.strip()
+        numbers_raw = re.findall(r'\d+', text)
+        
+        if not numbers_raw:
+            bot.reply_to(msg, "❌ لم يتم العثور على أرقام في النص المرسل!")
+            return
+        
+        
+        guessed_code = ""
+        
+        first_num_digits = "".join(filter(str.isdigit, numbers_raw[0])) if numbers_raw else ""
+        
+        if first_num_digits:
+           
+            for length in [3, 2, 1]:
+                prefix = first_num_digits[:length]
+               
+                if prefix in ["966", "971", "965", "974", "973", "968", "212", "213", "216", "961", "962", "963", "964", "967", "249", "218", "222", "20", "7", "1", "44"]:
+                    guessed_code = prefix
+                    break
+            if not guessed_code:
+                guessed_code = first_num_digits[:2] 
+        else:
+            guessed_code = "218" 
+
+        temp_filename = f"temp_{uuid.uuid4().hex[:8]}.txt"
+        with open(temp_filename, "w", encoding="utf-8") as f:
+            for num in numbers_raw:
+                if len(num) >= 8:
+                    f.write(num + "\n")
+        
+    
+        state = {"temp_file": temp_filename, "paste_mode": True}
+        process_country_code_logic(msg, user_id, guessed_code, state)
+        return
+    
+    elif action == "na_add_country_file":
+        if msg.content_type != "document":
+            bot.reply_to(msg, "❌ يرجى إرسال ملف txt!")
+            return
+
+        try:
+            file_info = bot.get_file(msg.document.file_id)
+            if not file_info.file_path:
+                bot.reply_to(msg, "❌ خطأ في تحميل الملف!")
+                return
+            downloaded_file = bot.download_file(file_info.file_path)
+        except Exception as e:
+            bot.reply_to(msg, f"❌ خطأ في تحميل الملف: {e}")
+            return
+
+        temp_filename = f"temp_{uuid.uuid4().hex[:8]}.txt"
+        with open(temp_filename, "wb") as f:
+            f.write(downloaded_file)
+
+        
+        try:
+            with open(temp_filename, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+                
+                all_numbers = re.findall(r'\d+', content)
+                if all_numbers:
+                   
+                    likely_phones = [n for n in all_numbers if 8 <= len(n) <= 15]
+                    if likely_phones:
+                        
+                        prefixes = {}
+                        for num in likely_phones:
+                           
+                            for i in range(1, 4):
+                                if len(num) > i:
+                                    pref = num[:i]
+                                    prefixes[pref] = prefixes.get(pref, 0) + 1
+                        
+                        
+                        sorted_prefixes = sorted(prefixes.items(), key=lambda x: (x[1], len(x[0])), reverse=True)
+                        guessed_code = sorted_prefixes[0][0] if sorted_prefixes else "20"
+                    else:
+                        guessed_code = "20"
+                else:
+                    guessed_code = "20"
+        except Exception as e:
+            print(f"Error guessing code: {e}")
+            guessed_code = "20"
+
+        state = {"temp_file": temp_filename}
+        process_country_code_logic(msg, user_id, guessed_code, state)
+        return
+
+    elif action == "na_add_country_code":
+        country_code = msg.text.strip()
+        process_country_code_logic(msg, user_id, country_code, state)
+        return
+
+    elif action == "na_add_country_name":
+        country_name = msg.text.strip()
+        numbers_file = state.get("numbers_file")
+        country_code = state.get("country_code")
+        num_cleaned = state.get("num_cleaned")
+
+        user_states[user_id] = {
+            "action": "na_add_country_platforms",
+            "numbers_file": numbers_file,
+            "country_code": country_code,
+            "country_name": country_name,
+            "num_cleaned": num_cleaned,
+            "server": "GROUP",
+            "selected_platforms": []
+        }
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("📘 Facebook", callback_data="na_add_country_plt_Facebook", style="primary"),
+            InlineKeyboardButton("💬 WhatsApp", callback_data="na_add_country_plt_WhatsApp", style="success")
+        )
+        markup.add(
+            InlineKeyboardButton("✈️ Telegram", callback_data="na_add_country_plt_Telegram", style="primary"),
+            InlineKeyboardButton("📸 Instagram", callback_data="na_add_country_plt_Instagram", style="danger")
+        )
+        markup.add(
+            InlineKeyboardButton("🐦 Twitter/X", callback_data="na_add_country_plt_Twitter", style="primary"),
+            InlineKeyboardButton("📱 TikTok", callback_data="na_add_country_plt_TikTok", style="danger")
+        )
+        markup.add(
+            InlineKeyboardButton("🎮 Discord", callback_data="na_add_country_plt_Discord", style="danger"),
+            InlineKeyboardButton("📧 Gmail", callback_data="na_add_country_plt_Gmail", style="primary")
+        )
+        markup.add(
+            InlineKeyboardButton("🌐 جميع المنصات", callback_data="na_add_country_plt_ALL", style="primary")
+        )
+        markup.add(InlineKeyboardButton("✅ تأكيد وإنهاء", callback_data="na_add_country_finish", style="success"))
+        markup.add(InlineKeyboardButton("❌ إلغاء", callback_data="numbers_admin_panel", style="danger"))
+
+        bot.reply_to(
+            msg,
+            f"✅ <b>الخطوة 3/3 - اختيار المنصات</b>\n\n"
+            f"🌍 الدولة: <b>{country_name}</b>\n"
+            f"🔢 رمز الدولة: <b>{country_code}</b>\n"
+            f"📊 عدد الأرقام: <b>{num_cleaned}</b>\n\n"
+            f"📱 <b>المنصات المختارة:</b> لا يوجد\n\n"
+            f"اختر المنصات التي تعمل عليها هذه الأرقام:",
+            parse_mode="HTML",
+            reply_markup=markup
+        )
+        return
+    
+    elif mode == "na_ban_user":
+        if msg.content_type != "text":
+            bot.reply_to(msg, "❌ يرجى إرسال معرف رقمي!")
+            return
+        
+        try:
+            ban_id = int(msg.text.strip())
+        except ValueError:
+            bot.reply_to(msg, "❌ المعرف يجب أن يكون رقماً!")
+            return
+        
+        if ban_id in BANNED:
+            bot.reply_to(msg, "⚠️ هذا المستخدم محظور بالفعل!")
+        else:
+            BANNED.append(ban_id)
+            save_banned()
+            bot.reply_to(msg, f"✅ تم حظر المستخدم <code>{ban_id}</code>!", parse_mode="HTML")
+        
+        del user_states[user_id]
+        return
+    
+    elif mode == "na_unban_user":
+        if msg.content_type != "text":
+            bot.reply_to(msg, "❌ يرجى إرسال معرف رقمي!")
+            return
+        
+        try:
+            unban_id = int(msg.text.strip())
+        except ValueError:
+            bot.reply_to(msg, "❌ المعرف يجب أن يكون رقماً!")
+            return
+        
+        if unban_id not in BANNED:
+            bot.reply_to(msg, "⚠️ هذا المستخدم غير محظور!")
+        else:
+            BANNED.remove(unban_id)
+            save_banned()
+            bot.reply_to(msg, f"✅ تم إلغاء حظر المستخدم <code>{unban_id}</code>!", parse_mode="HTML")
+        
+        del user_states[user_id]
+        return
+    
+    if user_id in broadcast_state:
+        bc_mode = broadcast_state[user_id].get("mode")
+        
+        if bc_mode == "na_global_broadcast":
+            success = 0
+            failed = 0
+            
+            for uid in USERS.keys():
+                try:
+                    bot.copy_message(int(uid), msg.chat.id, msg.message_id)
+                    success += 1
+                except:
+                    failed += 1
+            
+            bot.reply_to(msg, f"✅ تم إرسال الإذاعة الشاملة!\n\n📊 نجح: {success}\n❌ فشل: {failed}")
+            del broadcast_state[user_id]
+            return
+
+    elif action == "na_add_country_file":
+        if msg.content_type != "document":
+            bot.reply_to(msg, "❌ يرجى إرسال ملف txt!")
+            return
+
+        try:
+            file_info = bot.get_file(msg.document.file_id)
+            if not file_info.file_path:
+                bot.reply_to(msg, "❌ خطأ في تحميل الملف!")
+                return
+            downloaded_file = bot.download_file(file_info.file_path)
+        except Exception as e:
+            bot.reply_to(msg, f"❌ خطأ في تحميل الملف: {e}")
+            return
+
+        temp_filename = f"temp_{uuid.uuid4().hex[:8]}.txt"
+
+        with open(temp_filename, "wb") as f:
+            f.write(downloaded_file)
+
+        user_states[user_id] = {"action": "na_add_country_code", "temp_file": temp_filename}
+
+        bot.reply_to(
+            msg,
+            "✅ <b>تم رفع الملف بنجاح!</b>\n\n"
+            "📝 <b>الخطوة 2/4</b>\n\n"
+            "أرسل رمز الدولة (مثال: 20 لمصر، 7 لروسيا، 966 للسعودية)\n\n"
+            "<i>سيتم الاحتفاظ فقط بالأرقام التي تبدأ برمز الدولة هذا</i>",
+            parse_mode="HTML"
+        )
+        return
+
+    elif action == "na_add_country_name":
+        country_name = msg.text.strip()
+        numbers_file = state.get("numbers_file")
+        country_code = state.get("country_code")
+        num_cleaned = state.get("num_cleaned")
+
+        user_states[user_id] = {
+            "action": "na_add_country_platforms",
+            "numbers_file": numbers_file,
+            "country_code": country_code,
+            "country_name": country_name,
+            "num_cleaned": num_cleaned,
+            "server": "GROUP",
+            "selected_platforms": []
+        }
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("📘 Facebook", callback_data="na_add_country_plt_Facebook", style="primary"),
+            InlineKeyboardButton("💬 WhatsApp", callback_data="na_add_country_plt_WhatsApp", style="success")
+        )
+        markup.add(
+            InlineKeyboardButton("✈️ Telegram", callback_data="na_add_country_plt_Telegram", style="danger"),
+            InlineKeyboardButton("📸 Instagram", callback_data="na_add_country_plt_Instagram", style="primary")
+        )
+        markup.add(
+            InlineKeyboardButton("🐦 Twitter/X", callback_data="na_add_country_plt_Twitter", style="danger"),
+            InlineKeyboardButton("📱 TikTok", callback_data="na_add_country_plt_TikTok", style="primary")
+        )
+        markup.add(
+            InlineKeyboardButton("🎮 Discord", callback_data="na_add_country_plt_Discord", style="primary"),
+            InlineKeyboardButton("📧 Gmail", callback_data="na_add_country_plt_Gmail", style="danger")
+        )
+        markup.add(
+            InlineKeyboardButton("🌐 جميع المنصات", callback_data="na_add_country_plt_ALL", style="primary")
+        )
+        markup.add(InlineKeyboardButton("✅ تأكيد وإنهاء", callback_data="na_add_country_finish", style="success"))
+        markup.add(InlineKeyboardButton("❌ إلغاء", callback_data="numbers_admin_panel", style="danger"))
+
+        bot.reply_to(
+            msg,
+            f"✅ <b>الخطوة 3/3 - اختيار المنصات</b>\n\n"
+            f"🌍 الدولة: <b>{country_name}</b>\n"
+            f"🔢 رمز الدولة: <b>{country_code}</b>\n"
+            f"📊 عدد الأرقام: <b>{num_cleaned}</b>\n\n"
+            f"📱 <b>المنصات المختارة:</b> لا يوجد\n\n"
+            f"اختر المنصات التي تعمل عليها هذه الأرقام:",
+            parse_mode="HTML",
+            reply_markup=markup
+        )
+        return
+
+    elif action == "remove_country":
+        country_name = msg.text.strip()
+
+        if country_name in COUNTRIES:
+            country_data = COUNTRIES[country_name]
+            numbers_file = country_data.get("file", "")
+            
+            if numbers_file and os.path.exists(numbers_file):
+                try:
+                    os.remove(numbers_file)
+                    print(f"🗑️ تم حذف ملف الأرقام: {numbers_file}")
+                except Exception as e:
+                    print(f"⚠️ خطأ في حذف ملف الأرقام {numbers_file}: {e}")
+            
+            del COUNTRIES[country_name]
+            save_countries()
+            del user_states[user_id]
+            
+            file_status = f"\n📄 تم حذف ملف الأرقام: {numbers_file}" if numbers_file else ""
+            bot.reply_to(msg, f"✅ تم حذف الدولة: {country_name}{file_status}")
+        else:
+            bot.reply_to(msg, f"❌ الدولة غير موجودة: {country_name}")
+
+    elif action == "add_channel":
+        try:
+            channel_input = msg.text.strip()
+            if channel_input.startswith("https://t.me/"):
+                channel_username = "@" + channel_input.replace("https://t.me/", "")
+            elif channel_input.startswith("@"):
+                channel_username = channel_input
+            elif channel_input.startswith("-") or channel_input.isdigit():
+                channel_username = channel_input
+            else:
+                channel_username = "@" + channel_input
+
+            try:
+                chat = bot.get_chat(channel_username)
+                channel_id = chat.id
+                
+                if chat.username:
+                    channel_url = f"https://t.me/{chat.username}"
+                else:
+                    channel_url = f"https://t.me/c/{str(channel_id)[4:]}/1"
+
+                user_states[user_id] = {
+                    "action": "add_channel_name_ar",
+                    "channel_id": channel_id,
+                    "channel_username": channel_username,
+                    "channel_url": channel_url
+                }
+                bot.reply_to(msg, "📝 أرسل الآن اسم القناة الذي سيظهر على الزر (باللغة العربية):")
+            except Exception as e:
+                bot.reply_to(msg, f"❌ خطأ في الوصول للقناة: {e}\n\nتأكد أن:\n• البوت مشرف في القناة\n• الرابط أو المعرف صحيح")
+        except Exception as e:
+            bot.reply_to(msg, f"❌ خطأ: {e}")
+
+    elif action == "add_channel_name_ar":
+        name_ar = msg.text.strip()
+        state["name_ar"] = name_ar
+        user_states[user_id]["action"] = "add_channel_name_en"
+        bot.reply_to(msg, "📝 أرسل الآن اسم القناة الذي سيظهر على الزر (باللغة الإنجليزية):")
+
+    elif action == "add_channel_name_en":
+        name_en = msg.text.strip()
+        channel_id = state.get("channel_id")
+        channel_username = state.get("channel_username")
+        channel_url = state.get("channel_url")
+        name_ar = state.get("name_ar")
+
+        CHANNELS.append({
+            "name": name_en, 
+            "name_ar": name_ar,
+            "name_en": name_en,
+            "id": channel_id,
+            "username": channel_username,
+            "url": channel_url
+        })
+        save_channels()
+        del user_states[user_id]
+
+        bot.reply_to(
+            msg,
+            f"✅ <b>تم إضافة القناة بنجاح!</b>\n\n"
+            f"📢 الاسم (عربي): {name_ar}\n"
+            f"📢 الاسم (إنجليزي): {name_en}\n"
+            f"🔗 المعرف: {channel_username}\n"
+            f"🆔 ID: <code>{channel_id}</code>",
+            parse_mode="HTML"
+        )
+
+    elif action == "remove_channel":
+        try:
+            index = int(msg.text.strip()) - 1
+
+            if 0 <= index < len(CHANNELS):
+                removed = CHANNELS.pop(index)
+                save_channels()
+                del user_states[user_id]
+                bot.reply_to(msg, f"✅ تم حذف القناة: {removed['name']}")
+            else:
+                bot.reply_to(msg, "❌ رقم غير صحيح!")
+        except ValueError:
+            bot.reply_to(msg, "❌ يرجى إرسال رقم صحيح!")
+
+    elif action == "add_admin":
+        if user_id != MAIN_ADMIN_ID:
+            bot.reply_to(msg, "❌ عذراً، المالك فقط يمكنه إضافة مشرفين!")
+            return
+        try:
+            new_admin_id = int(msg.text.strip())
+
+            if new_admin_id in ADMINS:
+                bot.reply_to(msg, "⚠️ هذا المستخدم مشرف بالفعل!")
+                return
+
+            ADMINS.append(new_admin_id)
+            save_admins()
+            del user_states[user_id]
+            bot.reply_to(msg, f"✅ تم إضافة المشرف بنجاح!\n\nID: <code>{new_admin_id}</code>", parse_mode="HTML")
+        except ValueError:
+            bot.reply_to(msg, "❌ ID غير صحيح!")
+
+    elif action == "remove_admin":
+        if user_id != MAIN_ADMIN_ID:
+            bot.reply_to(msg, "❌ عذراً، المالك فقط يمكنه حذف مشرفين!")
+            return
+        try:
+            target_id = int(msg.text.strip())
+            if target_id == MAIN_ADMIN_ID:
+                bot.reply_to(msg, "❌ لا يمكن حذف المشرف الأساسي (المالك)!")
+                return
+            
+            if target_id in ADMINS:
+                ADMINS.remove(target_id)
+                save_admins()
+                del user_states[user_id]
+                bot.reply_to(msg, f"✅ تم حذف المشرف بنجاح!\n\nID: <code>{target_id}</code>", parse_mode="HTML")
+            else:
+                bot.reply_to(msg, "❌ هذا المستخدم ليس مشرفاً!")
+        except ValueError:
+            bot.reply_to(msg, "❌ ID غير صحيح!")
+
+    elif action == "ban_user":
+        try:
+            ban_user_id = int(msg.text.strip())
+
+            if ban_user_id in ADMINS:
+                bot.reply_to(msg, "❌ لا يمكن حظر المشرفين!")
+                return
+
+            if ban_user_id in BANNED:
+                bot.reply_to(msg, "⚠️ هذا المستخدم محظور بالفعل!")
+                return
+
+            BANNED.append(ban_user_id)
+            save_banned()
+            del user_states[user_id]
+            bot.reply_to(msg, f"✅ تم حظر المستخدم!\n\nID: <code>{ban_user_id}</code>", parse_mode="HTML")
+        except ValueError:
+            bot.reply_to(msg, "❌ ID غير صحيح!")
+
+    elif action == "unban_user":
+        try:
+            unban_user_id = int(msg.text.strip())
+
+            if unban_user_id in BANNED:
+                BANNED.remove(unban_user_id)
+                save_banned()
+                del user_states[user_id]
+                bot.reply_to(msg, f"✅ تم إلغاء حظر المستخدم!\n\nID: <code>{unban_user_id}</code>", parse_mode="HTML")
+            else:
+                bot.reply_to(msg, "❌ هذا المستخدم غير محظور!")
+        except ValueError:
+            bot.reply_to(msg, "❌ ID غير صحيح!")
+
+    elif action == "set_otp_group":
+        global OTP_GROUP
+        try:
+            group_id = int(msg.text.strip())
+            OTP_GROUP = group_id
+            save_otp_group()
+            del user_states[user_id]
+            bot.reply_to(msg, f"✅ تم تعيين مجموعة OTP!\n\nID: <code>{group_id}</code>", parse_mode="HTML")
+        except ValueError:
+            bot.reply_to(msg, "❌ ID غير صحيح!")
+    
+    elif action == "edit_code_bonus":
+        try:
+            new_value = float(msg.text.strip())
+            if new_value <= 0 or new_value > 10:
+                bot.reply_to(msg, "❌ القيمة يجب أن تكون بين 0.01 و 10!")
+                return
+            settings = load_referral_settings()
+            settings["code_bonus"] = new_value
+            save_referral_settings(settings)
+            del user_states[user_id]
+            bot.reply_to(msg, f"✅ تم تحديث بونص الكود إلى <b>${new_value}</b>", parse_mode="HTML")
+        except ValueError:
+            bot.reply_to(msg, "❌ يرجى إدخال رقم صحيح!")
+    
+    elif action == "edit_referral_bonus":
+        try:
+            new_value = float(msg.text.strip())
+            if new_value <= 0 or new_value > 100:
+                bot.reply_to(msg, "❌ القيمة يجب أن تكون بين 0.01 و 100!")
+                return
+            settings = load_referral_settings()
+            settings["referral_bonus"] = new_value
+            save_referral_settings(settings)
+            del user_states[user_id]
+            bot.reply_to(msg, f"✅ تم تحديث بونص الإحالة إلى <b>${new_value}</b>", parse_mode="HTML")
+        except ValueError:
+            bot.reply_to(msg, "❌ يرجى إدخال رقم صحيح!")
+    
+    elif action == "edit_codes_required":
+        try:
+            new_value = int(msg.text.strip())
+            if new_value < 1 or new_value > 100:
+                bot.reply_to(msg, "❌ العدد يجب أن يكون بين 1 و 100!")
+                return
+            settings = load_referral_settings()
+            settings["codes_required_for_referral"] = new_value
+            save_referral_settings(settings)
+            del user_states[user_id]
+            bot.reply_to(msg, f"✅ تم تحديث عدد الأكواد المطلوبة إلى <b>{new_value}</b>", parse_mode="HTML")
+        except ValueError:
+            bot.reply_to(msg, "❌ يرجى إدخال رقم صحيح!")
+    
+    elif action == "edit_min_withdrawal":
+        try:
+            new_value = float(msg.text.strip())
+            if new_value <= 0 or new_value > 1000:
+                bot.reply_to(msg, "❌ القيمة يجب أن تكون بين 0.01 و 1000!")
+                return
+            settings = load_referral_settings()
+            settings["min_withdrawal"] = new_value
+            save_referral_settings(settings)
+            del user_states[user_id]
+            bot.reply_to(msg, f"✅ تم تحديث الحد الأدنى للسحب إلى <b>${new_value}</b>", parse_mode="HTML")
+        except ValueError:
+            bot.reply_to(msg, "❌ يرجى إدخال رقم صحيح!")
+    
+    elif action == "admin_add_balance":
+        try:
+            parts = msg.text.strip().split()
+            if len(parts) != 2:
+                bot.reply_to(msg, "❌ الصيغة غير صحيحة! استخدم: USER_ID AMOUNT")
+                return
+            target_user_id = int(parts[0])
+            amount = float(parts[1])
+            if amount <= 0 or amount > 10000:
+                bot.reply_to(msg, "❌ المبلغ يجب أن يكون بين 0.01 و 10000!")
+                return
+            
+            referrals_data = load_referrals()
+            target_key = str(target_user_id)
+            if target_key not in referrals_data:
+                referrals_data[target_key] = {
+                    "referred_by": None,
+                    "referrals": [],
+                    "active_referrals": 0,
+                    "codes_received": 0,
+                    "balance": 0.0,
+                    "total_earned": 0.0
+                }
+            
+            old_balance = referrals_data[target_key].get("balance", 0.0)
+            referrals_data[target_key]["balance"] = old_balance + amount
+            referrals_data[target_key]["total_earned"] = referrals_data[target_key].get("total_earned", 0.0) + amount
+            save_referrals(referrals_data)
+            del user_states[user_id]
+            
+            new_balance = referrals_data[target_key]["balance"]
+            bot.reply_to(msg, f"✅ <b>تم إضافة الرصيد بنجاح!</b>\n\n👤 المستخدم: <code>{target_user_id}</code>\n💰 المبلغ المضاف: <b>${amount:.2f}</b>\n💵 الرصيد السابق: <b>${old_balance:.2f}</b>\n💵 الرصيد الجديد: <b>${new_balance:.2f}</b>", parse_mode="HTML")
+            
+            try:
+                target_lang = get_user_language(target_user_id)
+                if target_lang == "ar":
+                    notify_msg = f"💰 <b>تم إضافة رصيد!</b>\n\nتم إضافة <b>${amount:.2f}</b> إلى رصيدك بواسطة الأدمن.\n💵 رصيدك الحالي: <b>${new_balance:.2f}</b>"
+                else:
+                    notify_msg = f"💰 <b>Balance Added!</b>\n\n<b>${amount:.2f}</b> has been added to your balance by admin.\n💵 Your current balance: <b>${new_balance:.2f}</b>"
+                bot.send_message(target_user_id, notify_msg, parse_mode="HTML")
+            except:
+                pass
+        except ValueError:
+            bot.reply_to(msg, "❌ الصيغة غير صحيحة! استخدم: USER_ID AMOUNT\n\nمثال: 123456789 5.00")
+    
+    elif action == "admin_subtract_balance":
+        try:
+            parts = msg.text.strip().split()
+            if len(parts) != 2:
+                bot.reply_to(msg, "❌ الصيغة غير صحيحة! استخدم: USER_ID AMOUNT")
+                return
+            target_user_id = int(parts[0])
+            amount = float(parts[1])
+            if amount <= 0 or amount > 10000:
+                bot.reply_to(msg, "❌ المبلغ يجب أن يكون بين 0.01 و 10000!")
+                return
+            
+            referrals_data = load_referrals()
+            target_key = str(target_user_id)
+            if target_key not in referrals_data:
+                bot.reply_to(msg, "❌ المستخدم غير موجود في نظام الإحالات!")
+                del user_states[user_id]
+                return
+            
+            old_balance = referrals_data[target_key].get("balance", 0.0)
+            if amount > old_balance:
+                bot.reply_to(msg, f"❌ رصيد المستخدم غير كافي!\n💵 رصيده الحالي: ${old_balance:.2f}")
+                return
+            
+            referrals_data[target_key]["balance"] = old_balance - amount
+            save_referrals(referrals_data)
+            del user_states[user_id]
+            
+            new_balance = referrals_data[target_key]["balance"]
+            bot.reply_to(msg, f"✅ <b>تم خصم الرصيد بنجاح!</b>\n\n👤 المستخدم: <code>{target_user_id}</code>\n💰 المبلغ المخصوم: <b>${amount:.2f}</b>\n💵 الرصيد السابق: <b>${old_balance:.2f}</b>\n💵 الرصيد الجديد: <b>${new_balance:.2f}</b>", parse_mode="HTML")
+            
+            try:
+                target_lang = get_user_language(target_user_id)
+                if target_lang == "ar":
+                    notify_msg = f"⚠️ <b>تم خصم رصيد!</b>\n\nتم خصم <b>${amount:.2f}</b> من رصيدك بواسطة الأدمن.\n💵 رصيدك الحالي: <b>${new_balance:.2f}</b>"
+                else:
+                    notify_msg = f"⚠️ <b>Balance Deducted!</b>\n\n<b>${amount:.2f}</b> has been deducted from your balance by admin.\n💵 Your current balance: <b>${new_balance:.2f}</b>"
+                bot.send_message(target_user_id, notify_msg, parse_mode="HTML")
+            except:
+                pass
+        except ValueError:
+            bot.reply_to(msg, "❌ الصيغة غير صحيحة! استخدم: USER_ID AMOUNT\n\nمثال: 123456789 5.00")
+    
+    elif action == "edit_welcome_ar":
+        new_message = msg.text.strip()
+        if len(new_message) < 10:
+            bot.reply_to(msg, "❌ الرسالة قصيرة جداً!")
+            return
+        messages = load_welcome_messages()
+        messages["ar"] = new_message
+        save_welcome_messages(messages)
+        del user_states[user_id]
+        bot.reply_to(msg, "✅ تم تحديث رسالة الترحيب العربية!")
+    
+    elif action == "edit_welcome_en":
+        new_message = msg.text.strip()
+        if len(new_message) < 10:
+            bot.reply_to(msg, "❌ Message is too short!")
+            return
+        messages = load_welcome_messages()
+        messages["en"] = new_message
+        save_welcome_messages(messages)
+        del user_states[user_id]
+        bot.reply_to(msg, "✅ English welcome message updated!")
+    
+    elif action and action.startswith("edit_button_link_"):
+        link_key = action.replace("edit_button_link_", "")
+        new_link = msg.text.strip()
+        if not new_link.startswith("https://"):
+            bot.reply_to(msg, "❌ الرابط يجب أن يبدأ بـ https://\n❌ Link must start with https://")
+            return
+        links = load_button_links()
+        links[link_key] = new_link
+        save_button_links(links)
+        del user_states[user_id]
+        bot.reply_to(msg, f"✅ تم تحديث الرابط بنجاح!\n✅ Link updated successfully!\n\n🔗 {new_link}")
+    
+    elif action == "otp_btn_add_name":
+        btn_name = msg.text.strip()
+        if len(btn_name) < 1:
+            bot.reply_to(msg, "❌ اسم الزر قصير جداً!")
+            return
+        user_states[user_id] = {"action": "otp_btn_add_url", "btn_name": btn_name}
+        bot.reply_to(msg, f"✅ اسم الزر: <b>{btn_name}</b>\n\nالآن أرسل رابط الزر:\n(مثال: https://t.me/YourChannel)", parse_mode="HTML")
+    
+    elif action == "otp_btn_add_url":
+        btn_url = msg.text.strip()
+        if not btn_url.startswith("https://"):
+            bot.reply_to(msg, "❌ الرابط يجب أن يبدأ بـ https://")
+            return
+        btn_name = state.get("btn_name", "Button")
+        otp_buttons = load_otp_buttons()
+        otp_buttons.append({"name": btn_name, "url": btn_url})
+        save_otp_buttons(otp_buttons)
+        del user_states[user_id]
+        bot.reply_to(msg, f"✅ تم إضافة الزر بنجاح!\n\n📝 الاسم: <b>{btn_name}</b>\n🔗 الرابط: {btn_url}", parse_mode="HTML")
+    
+    elif action == "otp_btn_edit_name":
+        btn_idx = state.get("btn_idx", 0)
+        new_name = msg.text.strip()
+        if len(new_name) < 1:
+            bot.reply_to(msg, "❌ اسم الزر قصير جداً!")
+            return
+        otp_buttons = load_otp_buttons()
+        if btn_idx < len(otp_buttons):
+            otp_buttons[btn_idx]["name"] = new_name
+            save_otp_buttons(otp_buttons)
+            del user_states[user_id]
+            bot.reply_to(msg, f"✅ تم تحديث اسم الزر إلى: <b>{new_name}</b>", parse_mode="HTML")
+        else:
+            bot.reply_to(msg, "❌ الزر غير موجود!")
+            del user_states[user_id]
+    
+    elif action == "otp_btn_edit_url":
+        btn_idx = state.get("btn_idx", 0)
+        new_url = msg.text.strip()
+        if not new_url.startswith("https://"):
+            bot.reply_to(msg, "❌ الرابط يجب أن يبدأ بـ https://")
+            return
+        otp_buttons = load_otp_buttons()
+        if btn_idx < len(otp_buttons):
+            otp_buttons[btn_idx]["url"] = new_url
+            save_otp_buttons(otp_buttons)
+            del user_states[user_id]
+            bot.reply_to(msg, f"✅ تم تحديث رابط الزر إلى:\n🔗 {new_url}", parse_mode="HTML")
+        else:
+            bot.reply_to(msg, "❌ الزر غير موجود!")
+            del user_states[user_id]
+    
+    elif action == "withdraw_details":
+        method = state.get("method", "Unknown")
+        method_key = state.get("method_key", "unknown")
+        details = msg.text.strip()
+        lang = get_user_language(user_id)
+        
+        if len(details) < 5:
+            msg_text = "❌ التفاصيل غير صحيحة!" if lang == "ar" else "❌ Invalid details!"
+            bot.reply_to(msg, msg_text)
+            return
+        
+        referral_data = get_user_referral_data(user_id)
+        balance = referral_data.get("balance", 0.0)
+        settings = load_referral_settings()
+        min_withdrawal = settings.get("min_withdrawal", 5.0)
+        
+        if balance < min_withdrawal:
+            msg_text = f"❌ رصيدك غير كافي! الحد الأدنى: ${min_withdrawal}" if lang == "ar" else f"❌ Insufficient balance! Minimum: ${min_withdrawal}"
+            bot.reply_to(msg, msg_text)
+            del user_states[user_id]
+            return
+        
+        global REFERRALS
+        REFERRALS = load_referrals()
+        REFERRALS[str(user_id)]["balance"] = 0.0
+        save_referrals(REFERRALS)
+        
+        request_id = str(uuid.uuid4())[:8]
+        withdrawal_request = {
+            "id": request_id,
+            "user_id": user_id,
+            "amount": balance,
+            "method": method,
+            "method_key": method_key,
+            "details": details,
+            "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
+            "status": "pending"
+        }
+        
+        requests_list = load_withdrawal_requests()
+        requests_list.append(withdrawal_request)
+        save_withdrawal_requests(requests_list)
+        
+        del user_states[user_id]
+        
+        if lang == "ar":
+            bot.reply_to(
+                msg,
+                f"✅ <b>تم إرسال طلب السحب!</b>\n\n"
+                f"🆔 رقم الطلب: <code>{request_id}</code>\n"
+                f"💵 المبلغ: <b>${balance:.2f}</b>\n"
+                f"📝 الطريقة: {method}\n"
+                f"📋 التفاصيل: <code>{details}</code>\n\n"
+                f"⏳ <b>الحالة:</b> قيد المعالجة\n"
+                f"سيتم إشعارك عند الموافقة أو الرفض.",
+                parse_mode="HTML"
+            )
+        else:
+            bot.reply_to(
+                msg,
+                f"✅ <b>Withdrawal request submitted!</b>\n\n"
+                f"🆔 Request ID: <code>{request_id}</code>\n"
+                f"💵 Amount: <b>${balance:.2f}</b>\n"
+                f"📝 Method: {method}\n"
+                f"📋 Details: <code>{details}</code>\n\n"
+                f"⏳ <b>Status:</b> Processing\n"
+                f"You will be notified when approved or rejected.",
+                parse_mode="HTML"
+            )
+        
+        admin_markup = InlineKeyboardMarkup(row_width=2)
+        admin_markup.add(
+            InlineKeyboardButton("✅ تأكيد الدفع", callback_data=f"wd_approve_{request_id}"),
+            InlineKeyboardButton("❌ رفض", callback_data=f"wd_reject_{request_id}")
+        )
+        
+        user_data_for_admin = USERS.get(str(user_id), {})
+        user_referral_for_admin = get_user_referral_data(user_id)
+        
+        admin_join_date = user_data_for_admin.get("join_date", "غير محدد")
+        admin_total_codes = user_data_for_admin.get("activations", 0)
+        admin_total_referrals = len(user_referral_for_admin.get("referrals", []))
+        admin_active_referrals = user_referral_for_admin.get("active_referrals", 0)
+        admin_total_earned = user_referral_for_admin.get("total_earned", 0.0)
+        
+        admin_notification = (
+            f"📋 <b>طلب سحب جديد!</b>\n\n"
+            f"🆔 رقم الطلب: <code>{request_id}</code>\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>بيانات المستخدم:</b>\n"
+            f"├ 🆔 ID: <code>{user_id}</code>\n"
+            f"├ 📅 تاريخ الانضمام: {admin_join_date}\n"
+            f"├ 📊 إجمالي الأكواد: {admin_total_codes}\n"
+            f"├ 👥 إجمالي الإحالات: {admin_total_referrals}\n"
+            f"├ ✅ إحالات نشطة: {admin_active_referrals}\n"
+            f"└ 💰 إجمالي الأرباح: ${admin_total_earned:.2f}\n\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"💳 <b>تفاصيل السحب:</b>\n"
+            f"├ 💵 المبلغ: <b>${balance:.2f}</b>\n"
+            f"├ ?? الطريقة: {method}\n"
+            f"└ 📋 التفاصيل: <code>{details}</code>\n\n"
+            f"⏳ الحالة: قيد الانتظار"
+        )
+        
+        for admin_id in ADMINS:
+            try:
+                bot.send_message(
+                    admin_id,
+                    admin_notification,
+                    parse_mode="HTML",
+                    reply_markup=admin_markup
+                )
+            except:
+                pass
+    
+    elif action == "change_site_username":
+        global USERNAME, USERNAME2, USERNAME3
+        site_key = state.get("site_key")
+        account_id = state.get("account_id")
+        new_username = msg.text.strip()
+        
+        accounts = get_site_accounts(site_key)
+        account_found = False
+        
+        for idx, acc in enumerate(accounts):
+            if acc.get("id") == account_id:
+                accounts[idx]["username"] = new_username
+                account_found = True
+                
+                if idx == 0:
+                    if site_key == "GROUP":
+                        USERNAME = new_username
+                    elif site_key == "Fly sms":
+                        USERNAME2 = new_username
+                    elif site_key == "Number_Panel":
+                        USERNAME3 = new_username
+                break
+        
+        if account_found:
+            SETTINGS[site_key]["accounts"] = accounts
+            save_settings(SETTINGS)
+            
+            del user_states[user_id]
+            site_name = SETTINGS[site_key]["name"]
+            bot.reply_to(
+                msg,
+                f"✅ <b>تم تحديث اليوزر - {site_name}</b>\n\n"
+                f"👤 اليوزر الجديد: <code>{new_username}</code>",
+                parse_mode="HTML"
+            )
+        else:
+            bot.reply_to(msg, "❌ الحساب غير موجود!")
+    
+    elif action == "change_site_password":
+        global PASSWORD, PASSWORD2, PASSWORD3
+        site_key = state.get("site_key")
+        account_id = state.get("account_id")
+        new_password = msg.text.strip()
+        
+        accounts = get_site_accounts(site_key)
+        account_found = False
+        
+        for idx, acc in enumerate(accounts):
+            if acc.get("id") == account_id:
+                accounts[idx]["password"] = new_password
+                account_found = True
+                
+                if idx == 0:
+                    if site_key == "GROUP":
+                        PASSWORD = new_password
+                    elif site_key == "Fly sms":
+                        PASSWORD2 = new_password
+                    elif site_key == "Number_Panel":
+                        PASSWORD3 = new_password
+                break
+        
+        if account_found:
+            SETTINGS[site_key]["accounts"] = accounts
+            save_settings(SETTINGS)
+            
+            del user_states[user_id]
+            site_name = SETTINGS[site_key]["name"]
+            bot.reply_to(
+                msg,
+                f"✅ <b>تم تحديث الباسورد - {site_name}</b>\n\n"
+                f"🔑 تم حفظ كلمة المرور الجديدة",
+                parse_mode="HTML"
+            )
+        else:
+            bot.reply_to(msg, "❌ الحساب غير موجود!")
+    
+    elif action == "add_account_username":
+        site_key = state.get("site_key")
+        site_name = SETTINGS[site_key]["name"]
+        new_username = msg.text.strip()
+        
+        if not new_username:
+            bot.reply_to(msg, "❌ اسم المستخدم لا يمكن أن يكون فارغاً!")
+            return
+        
+        if site_key == "iVASMS":
+            user_states[user_id] = {
+                "action": "add_account_password",
+                "site_key": site_key,
+                "username": new_username
+            }
+            bot.reply_to(
+                msg,
+                f"➕ <b>إضافة حساب جديد - {site_name}</b>\n\n"
+                f"✅ اليوزر: <code>{new_username}</code>\n\n"
+                f"📝 الخطوة 2/3: أرسل كلمة المرور (Password):",
+                parse_mode="HTML"
+            )
+        else:
+            user_states[user_id] = {
+                "action": "add_account_password",
+                "site_key": site_key,
+                "username": new_username
+            }
+            bot.reply_to(
+                msg,
+                f"➕ <b>إضافة حساب جديد - {site_name}</b>\n\n"
+                f"✅ اليوزر: <code>{new_username}</code>\n\n"
+                f"📝 الخطوة 2/2: أرسل كلمة المرور (Password):",
+                parse_mode="HTML"
+            )
+    
+    elif action == "add_account_password":
+        site_key = state.get("site_key")
+        site_name = SETTINGS[site_key]["name"]
+        username = state.get("username")
+        password = msg.text.strip()
+        
+        if not password:
+            bot.reply_to(msg, "❌ كلمة المرور لا يمكن أن تكون فارغة!")
+            return
+        
+        if site_key == "iVASMS":
+            user_states[user_id] = {
+                "action": "add_account_api_key",
+                "site_key": site_key,
+                "username": username,
+                "password": password
+            }
+            bot.reply_to(
+                msg,
+                f"➕ <b>إضافة حساب جديد - {site_name}</b>\n\n"
+                f"✅ اليوزر: <code>{username}</code>\n"
+                f"✅ الباسورد: <code>{password}</code>\n\n"
+                f"📝 الخطوة 3/3: أرسل مفتاح API (API Key):",
                 parse_mode="HTML"
             )
             return
-        context.user_data["withdraw_mode"] = "select_method"
-        await query.message.reply_text("💳 SELECT YOUR PAYMENT METHOD!", reply_markup=withdraw_method_keyboard())
-        return
-
-    if data == "withdraw_confirm":
-        await process_withdraw_confirm(update, context)
-        return
-
-    if data == "withdraw_cancel":
-        await process_withdraw_cancel(update, context)
-        return
-
-    if data == "withdraw_admin_back":
-        await query.message.edit_text(
-            pe("💸 <b>WITHDRAWAL MANAGEMENT</b>\n\n"
-            f"📉 Current minimum: <code>{get_min_withdraw():.2f} BDT</code>"),
+        
+        new_account = add_account(site_key, username, password)
+        
+        if new_account:
+            del user_states[user_id]
+            
+            if SETTINGS[site_key]["enabled"]:
+                thread = Thread(target=start_monitoring_for_account, args=(site_key, new_account), daemon=True)
+                thread.start()
+                print(f"🚀 بدء مراقبة فورية للحساب الجديد: {username} ({site_name})")
+                
+                bot.reply_to(
+                    msg,
+                    f"✅ <b>تم إضافة الحساب بنجاح - {site_name}</b>\n\n"
+                    f"👤 اليوزر: <code>{username}</code>\n"
+                    f"🔑 الباسورد: <code>{password}</code>\n"
+                    f"🆔 ID: <code>{new_account['id'][:8]}...</code>\n\n"
+                    f"🚀 <b>تم بدء المراقبة فوراً!</b>",
+                    parse_mode="HTML"
+                )
+            else:
+                bot.reply_to(
+                    msg,
+                    f"✅ <b>تم إضافة الحساب بنجاح - {site_name}</b>\n\n"
+                    f"👤 اليوزر: <code>{username}</code>\n"
+                    f"🔑 الباسورد: <code>{password}</code>\n"
+                    f"🆔 ID: <code>{new_account['id'][:8]}...</code>\n\n"
+                    f"⚠️ الموقع غير مفعل حالياً",
+                    parse_mode="HTML"
+                )
+        else:
+            bot.reply_to(msg, "❌ فشل إضافة الحساب!")
+    
+    elif action == "add_account_api_key":
+        site_key = state.get("site_key")
+        site_name = SETTINGS[site_key]["name"]
+        username = state.get("username")
+        password = state.get("password")
+        api_key = msg.text.strip()
+        
+        if not api_key:
+            bot.reply_to(msg, "❌ مفتاح API لا يمكن أن يكون فارغاً!")
+            return
+        
+        new_account = add_account(site_key, username, password)
+        
+        if new_account:
+            for idx, acc in enumerate(SETTINGS[site_key]["accounts"]):
+                if acc["id"] == new_account["id"]:
+                    SETTINGS[site_key]["accounts"][idx]["api_key"] = api_key
+                    save_settings(SETTINGS)
+                    break
+            
+            del user_states[user_id]
+            
+            if SETTINGS[site_key]["enabled"]:
+                new_account["api_key"] = api_key
+                thread = Thread(target=start_monitoring_for_account, args=(site_key, new_account), daemon=True)
+                thread.start()
+                print(f"🚀 بدء مراقبة فورية للحساب الجديد: {username} ({site_name})")
+                
+                bot.reply_to(
+                    msg,
+                    f"✅ <b>تم إضافة الحساب بنجاح - {site_name}</b>\n\n"
+                    f"👤 اليوزر: <code>{username}</code>\n"
+                    f"🔑 الباسورد: <code>{password}</code>\n"
+                    f"🔐 مفتاح API: <code>{api_key[:10]}...</code>\n"
+                    f"🆔 ID: <code>{new_account['id'][:8]}...</code>\n\n"
+                    f"🚀 <b>تم بدء المراقبة فوراً!</b>",
+                    parse_mode="HTML"
+                )
+            else:
+                bot.reply_to(
+                    msg,
+                    f"✅ <b>تم إضافة الحساب بنجاح - {site_name}</b>\n\n"
+                    f"👤 اليوزر: <code>{username}</code>\n"
+                    f"🔑 الباسورد: <code>{password}</code>\n"
+                    f"🔐 مفتاح API: <code>{api_key[:10]}...</code>\n"
+                    f"🆔 ID: <code>{new_account['id'][:8]}...</code>\n\n"
+                    f"⚠️ الموقع غير مفعل حالياً",
+                    parse_mode="HTML"
+                )
+        else:
+            bot.reply_to(msg, "❌ فشل إضافة الحساب!")
+    
+    elif action == "change_site_interval":
+        global CHECK_INTERVAL, CHECK_INTERVAL2, CHECK_INTERVAL3
+        site_key = state.get("site_key")
+        
+        try:
+            new_interval = int(msg.text.strip())
+            
+            if new_interval < 1 or new_interval > 300:
+                bot.reply_to(msg, "❌ الفترة يجب أن تكون بين 1 و 300 ثانية!")
+                return
+            
+            SETTINGS[site_key]["check_interval"] = new_interval
+            save_settings(SETTINGS)
+            
+            if site_key == "GROUP":
+                CHECK_INTERVAL = new_interval
+            elif site_key == "Fly sms":
+                CHECK_INTERVAL2 = new_interval
+            elif site_key == "Number_Panel":
+                CHECK_INTERVAL3 = new_interval
+            
+            del user_states[user_id]
+            site_name = SETTINGS[site_key]["name"]
+            bot.reply_to(
+                msg,
+                f"✅ <b>تم تحديث فترة البحث - {site_name}</b>\n\n"
+                f"⏱ الفترة الجديدة: {new_interval} ثانية\n\n"
+                f"⚠️ سيتم تطبيق التغيير في الدورة القادمة",
+                parse_mode="HTML"
+            )
+        except ValueError:
+            bot.reply_to(msg, "❌ يرجى إدخال رقم صحيح!")
+    
+    elif action == "change_site_timeout":
+        global HTTP_TIMEOUT, HTTP_TIMEOUT2, HTTP_TIMEOUT3
+        site_key = state.get("site_key")
+        
+        try:
+            new_timeout = int(msg.text.strip())
+            
+            if new_timeout < 5 or new_timeout > 300:
+                bot.reply_to(msg, "❌ وقت الانتظار يجب أن يكون بين 5 و 300 ثانية!")
+                return
+            
+            SETTINGS[site_key]["timeout"] = new_timeout
+            save_settings(SETTINGS)
+            
+            if site_key == "GROUP":
+                HTTP_TIMEOUT = new_timeout
+            elif site_key == "Fly sms":
+                HTTP_TIMEOUT2 = new_timeout
+            elif site_key == "Number_Panel":
+                HTTP_TIMEOUT3 = new_timeout
+            
+            del user_states[user_id]
+            site_name = SETTINGS[site_key]["name"]
+            bot.reply_to(
+                msg,
+                f"✅ <b>تم تحديث وقت الانتظار - {site_name}</b>\n\n"
+                f"⏳ الوقت الجديد: {new_timeout} ثانية",
+                parse_mode="HTML"
+            )
+        except ValueError:
+            bot.reply_to(msg, "❌ يرجى إدخال رقم صحيح!")
+    
+    elif action == "add_group":
+        try:
+            group_id = int(msg.text.strip())
+            
+            try:
+                chat = bot.get_chat(group_id)
+                admins = bot.get_chat_administrators(group_id)
+                
+                bot_is_admin = False
+                for admin in admins:
+                    if admin.user.id == bot.get_me().id:
+                        bot_is_admin = True
+                        break
+                
+                if not bot_is_admin:
+                    bot.reply_to(msg, "❌ البوت ليس admin في هذا الجروب!")
+                    return
+                
+                if group_id in GROUPS:
+                    bot.reply_to(msg, "⚠️ هذا الجروب مضاف بالفعل!")
+                    return
+                
+                GROUPS.append(group_id)
+                save_groups()
+                del user_states[user_id]
+                
+                bot.reply_to(
+                    msg,
+                    f"✅ <b>تم إضافة الجروب بنجاح!</b>\n\n"
+                    f"📱 الاسم: <b>{chat.title}</b>\n"
+                    f"🆔 ID: <code>{group_id}</code>",
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                bot.reply_to(msg, f"❌ خطأ: {e}\n\nتأكد أن:\n• البوت admin في الجروب\n• ID الجروب صحيح")
+        except ValueError:
+            bot.reply_to(msg, "❌ ID غير صحيح!")
+    
+    elif action == "remove_group":
+        try:
+            group_id = int(msg.text.strip())
+            
+            if group_id in GROUPS:
+                GROUPS.remove(group_id)
+                save_groups()
+                del user_states[user_id]
+                bot.reply_to(msg, f"✅ تم حذف الجروب!\n\nID: <code>{group_id}</code>", parse_mode="HTML")
+            else:
+                bot.reply_to(msg, "❌ الجروب غير موجود!")
+        except ValueError:
+            bot.reply_to(msg, "❌ ID غير صحيح!")
+    
+    elif user_id in broadcast_state:
+        state = broadcast_state[user_id]
+        broadcast_type = state.get("type")
+        step = state.get("step")
+        
+        if step != "waiting_message":
+            return
+        
+        saved_msg = {
+            "content_type": msg.content_type,
+            "chat_id": msg.chat.id,
+            "message_id": msg.message_id
+        }
+        
+        if msg.content_type == "text":
+            saved_msg["text"] = msg.text
+            saved_msg["has_entities"] = bool(msg.entities)
+        elif msg.content_type == "photo":
+            saved_msg["file_id"] = msg.photo[-1].file_id
+            saved_msg["caption"] = msg.caption
+        elif msg.content_type == "video":
+            saved_msg["file_id"] = msg.video.file_id
+            saved_msg["caption"] = msg.caption
+        elif msg.content_type == "document":
+            saved_msg["file_id"] = msg.document.file_id
+            saved_msg["caption"] = msg.caption
+        elif msg.content_type == "audio":
+            saved_msg["file_id"] = msg.audio.file_id
+            saved_msg["caption"] = msg.caption
+        elif msg.content_type == "voice":
+            saved_msg["file_id"] = msg.voice.file_id
+            saved_msg["caption"] = msg.caption
+        elif msg.content_type == "sticker":
+            saved_msg["file_id"] = msg.sticker.file_id
+        
+        broadcast_state[user_id]["message"] = saved_msg
+        broadcast_state[user_id]["step"] = "confirm"
+        
+        if broadcast_type == "forward":
+            broadcast_label = "📤 إعادة توجيه للمستخدمين"
+        else:
+            broadcast_label = "📣 مستخدمي البوت الرئيسي"
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("✅ تأكيد الإرسال", callback_data="confirm_broadcast", style="success"),
+            InlineKeyboardButton("🔙 إلغاء", callback_data="cancel_broadcast", style="danger")
+        )
+        
+        bot.reply_to(
+            msg,
+            f"📣 <b>تأكيد الإذاعة</b>\n\n"
+            f"📍 الوجهة: {broadcast_label}\n"
+            f"📝 نوع الرسالة: {msg.content_type}\n\n"
+            f"⚠️ هل أنت متأكد من إرسال هذه الرسالة؟",
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 BACK TO ADMIN", callback_data="withdraw_admin_close", style="primary")
-            ]]),
+            reply_markup=markup
         )
-        return
+    
+def get_country_info(number: str):
+    cleaned_num = clean_number(number)
+    country_codes = detect_country_from_number(number)
+    if country_codes:
+        return country_codes[0], country_codes[1]
+    return "Unknown", "🌐"
 
-    if data == "withdraw_admin_close":
-        await query.message.edit_text("🔙 Open the Admin Panel menu to continue.")
-        return
+def normalize_number(number):
 
-    if data.startswith("admin_approve_"):
-        if not is_admin(uid):
-            await query.answer("Admin access required.", show_alert=True)
-            return
-        await admin_approve_withdraw(update, context, data.replace("admin_approve_", ""))
-        return
+    if not number:
+        return ""
 
-    if data.startswith("admin_reject_"):
-        if not is_admin(uid):
-            await query.answer("Admin access required.", show_alert=True)
-            return
-        await admin_reject_withdraw(update, context, data.replace("admin_reject_", ""))
-        return
+    cleaned = re.sub(r'\D', '', str(number))
+    return cleaned
 
-    # COPY / MISC CALLBACKS
-    if data.startswith("copy_id_"):
-        await query.answer(f"✅ Copied ID: {data.replace('copy_id_', '')}", show_alert=True)
-        return
+COLLECTED_CODES_FILE = "collected_codes.json"
+collected_codes = []
 
-    if data.startswith("copy_text_"):
-        await query.answer(f"✅ Copied: {data.replace('copy_text_', '')}", show_alert=True)
-        return
+def load_collected_codes():
+    global collected_codes
+    if os.path.exists(COLLECTED_CODES_FILE):
+        try:
+            with open(COLLECTED_CODES_FILE, 'r', encoding='utf-8') as f:
+                collected_codes = json.load(f)
+        except:
+            collected_codes = []
+    return collected_codes
 
-    if data.startswith("my_ref_"):
-        target_uid = data.replace("my_ref_", "")
-        all_logs = load_data(ACTIVITY_LOGS_FILE)
-        my_referrals = [log for log in all_logs if str(log.get('uid')) == str(target_uid) and log.get('action') == "REFERRAL_JOINED"]
-        content = f"👥 REFERRAL REPORT — {target_uid}\n━━━━━━━━━━━━\nTOTAL: {len(my_referrals)}\n\n"
-        for i, log in enumerate(my_referrals, 1):
+def save_collected_codes():
+    with open(COLLECTED_CODES_FILE, 'w', encoding='utf-8') as f:
+        json.dump(collected_codes, f, indent=2, ensure_ascii=False)
+
+def send_otp_to_user(number, otp_message, full_number, group_message=None, otp_code=None):
+   
+    normalized_incoming = normalize_number(number)
+    
+    sent_to_users = []
+    users_copy = dict(USERS)
+    for user_id_str, user_data in users_copy.items():
+        selected_num = user_data.get("selected_number")
+        if not selected_num:
+            continue
+
+        normalized_selected = normalize_number(selected_num)
+
+        if (normalized_incoming == normalized_selected or 
+            normalized_incoming.endswith(normalized_selected) or 
+            normalized_selected.endswith(normalized_incoming) or
+            full_number == selected_num):
+
             try:
-                dt_obj = datetime.fromisoformat(log['timestamp'])
-                ref_id = log.get('details', {}).get('referred_user', 'N/A')
-                content += f"{i}. ID: {ref_id} | {dt_obj.strftime('%d/%m/%Y %I:%M %p')}\n"
-            except:
-                continue
-        f = io.BytesIO(content.encode())
-        f.name = f"REF_{target_uid}.txt"
-        await context.bot.send_document(chat_id=uid, document=f, caption="✅ **REFERRAL DATA**", parse_mode="Markdown")
-        return
+                bot.send_message(
+                    int(user_id_str),
+                    otp_message,
+                    parse_mode="HTML"
+                )
+                sent_to_users.append(user_id_str)
+                
+                if "activations" not in USERS.get(user_id_str, {}):
+                    if user_id_str in USERS:
+                        USERS[user_id_str]["activations"] = 0
+                if user_id_str in USERS:
+                    USERS[user_id_str]["activations"] = USERS[user_id_str].get("activations", 0) + 1
+                save_users()
+                
+                try:
+                    add_code_bonus(int(user_id_str))
+                except Exception as bonus_err:
+                    print(f"⚠️ خطأ في إضافة بونص للمستخدم {user_id_str}: {bonus_err}")
+            except Exception as e:
+                print(f"❌ خطأ إرسال للمستخدم {user_id_str}: {str(e)}")
 
-    if data.startswith("full_logs_"):
-        target_uid = data.replace("full_logs_", "")
-        stats = get_user_stats(target_uid)
-        all_logs = load_data(ACTIVITY_LOGS_FILE)
-        user_db = load_data(USER_DATA_FILE)
-        user_info = user_db.get(str(target_uid), {})
-        user_otps = [log for log in all_logs if str(log.get('uid')) == str(target_uid) and log.get('action') == "OTP_RECEIVED"]
-        content = (
-            f"📊 USER DATA REPORT — {target_uid}\n"
-            f"💰 BALANCE: {user_info.get('balance', 0):.2f} BDT\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"TODAY NUMBERS: {stats['today_numbers']}\n"
-            f"TODAY OTPS: {stats['today_otps']}\n"
-            f"7D NUMBERS: {stats['last7d_numbers']}\n"
-            f"7D OTPS: {stats['last7d_otps']}\n"
-            f"TOTAL NUMBERS: {stats['total_numbers']}\n"
-            f"TOTAL OTPS: {stats['total_otps']}\n"
-            f"━━━━━━━━━━━━━━━━━━\n\nOTP LOGS:\n"
-        )
-        for i, log in enumerate(user_otps, 1):
+    update_statistics()
+    
+    sent_groups = set()
+    msg_to_group = group_message if group_message else otp_message
+    
+    group_keyboard = create_group_otp_keyboard(otp_code)
+    
+    if OTP_GROUP and OTP_GROUP not in sent_groups:
+        try:
+            bot.send_message(OTP_GROUP, msg_to_group, parse_mode="HTML", disable_web_page_preview=True, reply_markup=group_keyboard)
+            sent_groups.add(OTP_GROUP)
+            print(f"✅ تم الإرسال لمجموعة OTP_GROUP: {OTP_GROUP}")
+        except Exception as e:
+            print(f"❌ خطأ إرسال لمجموعة OTP: {str(e)}")
+    
+    
+    if not GROUPS and os.path.exists(GROUPS_FILE):
+        try:
+            with open(GROUPS_FILE, "r") as f:
+                loaded_groups = json.load(f)
+                for g in loaded_groups:
+                    if g not in GROUPS:
+                        GROUPS.append(g)
+        except:
+            pass
+
+    groups_copy = list(GROUPS)
+    for gid in groups_copy:
+        if gid not in sent_groups:
             try:
-                dt_obj = datetime.fromisoformat(log['timestamp'])
-                d = log.get('details', {})
-                content += f"{i}. {dt_obj.strftime('%d/%m/%Y %I:%M %p')}\n   📞 {d.get('number', 'N/A')}\n   🔑 {d.get('otp', 'N/A')}\n\n"
+                bot.send_message(gid, msg_to_group, parse_mode="HTML", disable_web_page_preview=True, reply_markup=group_keyboard)
+                sent_groups.add(gid)
+                print(f"✅ تم الإرسال لمجموعة من القائمة: {gid}")
+            except Exception as e:
+                print(f"❌ خطأ إرسال لمجموعة {gid}: {str(e)}")
+    
+    return sent_to_users
+
+def load_last_seen_key():
+    global last_seen_key
+    if os.path.exists(LAST_MESSAGE_FILE):
+        try:
+            with open(LAST_MESSAGE_FILE, "r", encoding="utf-8") as f:
+                last_seen_key = f.read().strip()
+                print(f"📋 تم تحميل آخر رسالة مشاهدة: {last_seen_key[:50]}..." if last_seen_key else "📋 لا توجد رسائل سابقة")
+        except:
+            last_seen_key = ""
+    else:
+        last_seen_key = ""
+
+def save_last_seen_key():
+    try:
+        with open(LAST_MESSAGE_FILE, "w", encoding="utf-8") as f:
+            f.write(last_seen_key)
+        print(f"💾 تم حفظ آخر رسالة مشاهدة")
+    except Exception as e:
+        print(f"❌ خطأ في حفظ آخر رسالة: {str(e)}")
+
+def print_monitoring_box(site_name, username, status_icon, status_text):
+    box_width = 45
+    box = f"\n╔{'═' * box_width}\n  📍 {site_name}  •  👤 {username}\n  {status_icon} {status_text}\n╚{'═' * box_width}"
+    print(box)
+
+def login_site3():
+    global is_logged_in_site3
+    print("[Site3/Number_Panel] 🔄 محاولة تسجيل الدخول...")
+    
+    try:
+        session3.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
+        })
+        
+        resp = session3.get(LOGIN_PAGE_URL3, timeout=HTTP_TIMEOUT3)
+        print(f"[Site3/Number_Panel] 📄 حالة GET: {resp.status_code}")
+        
+        match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
+        if not match:
+            print("[Site3/Number_Panel] ⚠️ لم يتم العثور على captcha في الصفحة")
+            print(f"[Site3/Number_Panel] 📋 عينة من المحتوى: {resp.text[:500]}")
+            return False
+        
+        num1, num2 = int(match.group(1)), int(match.group(2))
+        captcha_answer = num1 + num2
+        print(f"[Site3/Number_Panel] 🧮 حل captcha: {num1} + {num2} = {captcha_answer}")
+        
+        payload = {
+            "username": USERNAME3,
+            "password": PASSWORD3,
+            "capt": str(captcha_answer)
+        }
+        
+        if "crlf" in resp.text:
+            crlf_match = re.search(r"name='crlf' value='([^']+)'", resp.text)
+            if crlf_match:
+                payload["crlf"] = crlf_match.group(1)
+                print(f"[Site3/Number_Panel] 🔑 استخراج crlf token")
+        
+        csrf_token = get_csrf_token_np(resp.text)
+        if csrf_token:
+            payload["_token"] = csrf_token
+            print(f"[Site3/Number_Panel] 🔑 استخراج CSRF Token")
+        
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": LOGIN_PAGE_URL3,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Origin": BASE_URL3
+        }
+        
+        print(f"[Site3/Number_Panel] 📤 إرسال طلب تسجيل الدخول لـ: {USERNAME3}")
+        resp = session3.post(LOGIN_POST_URL3, data=payload, headers=headers, timeout=HTTP_TIMEOUT3, allow_redirects=True)
+        
+        print(f"[Site3/Number_Panel] 📊 حالة POST: {resp.status_code}")
+        print(f"[Site3/Number_Panel] 🔗 URL النهائي: {resp.url}")
+        
+        if ("dashboard" in resp.text.lower() or 
+            "logout" in resp.text.lower() or 
+            "agent" in resp.url.lower() or
+            "reports" in resp.url.lower() or
+            "smscdr" in resp.text.lower() or
+            "signin" in resp.text.lower() or
+            "dashboard" in resp.url.lower() or
+            resp.url != LOGIN_PAGE_URL3):
+            print("[Site3/Number_Panel] ✅ تم تسجيل الدخول بنجاح")
+            is_logged_in_site3 = True
+            save_cookies_site3()
+            return True
+        else:
+            print("[Site3/Number_Panel] ❌ فشل تسجيل الدخول")
+            if "incorrect" in resp.text.lower() or "invalid" in resp.text.lower():
+                print("[Site3/Number_Panel] ⚠️ اسم المستخدم أو كلمة المرور غير صحيحة")
+            return False
+    except Exception as e:
+        print(f"[Site3/Number_Panel] ❌ خطأ في تسجيل الدخول: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def build_ajax_url_site3(wide_range=False):
+    if wide_range:
+        start_date = date.today() - timedelta(days=5)
+        end_date = date.today() + timedelta(days=1)
+    else:
+        start_date = date.today()
+        end_date = date.today() + timedelta(days=1)
+    
+    fdate1 = f"{start_date.strftime('%Y-%m-%d')} 00:00:00"
+    fdate2 = f"{end_date.strftime('%Y-%m-%d')} 23:59:59"
+    
+    return {
+        'url': BASE_URL3 + AJAX_PATH3,
+        'params': {
+            'fdate1': fdate1,
+            'fdate2': fdate2,
+            'sEcho': '1',
+            'iDisplayStart': '0',
+            'iDisplayLength': '50000',
+            'iSortCol_0': '0',
+            'sSortDir_0': 'desc'
+        }
+    }
+
+def extract_rows_from_json_site3(j):
+    if j is None:
+        return []
+    for key in ("data", "aaData", "rows"):
+        if isinstance(j, dict) and key in j:
+            return j[key]
+    return j if isinstance(j, list) else []
+
+def row_to_tuple_site3(row):
+    date_str = clean_html_site2(row[0]) if len(row) > 0 else ""
+    number = clean_number(row[2]) if len(row) > 2 else ""
+    sms = clean_html_site2(row[5]) if len(row) > 5 else ""
+    key = f"{date_str}|{number}|{sms}"
+    return date_str, number, sms, key
+
+def fetch_ajax_data_np(account_session, site_key, account):
+    try:
+        api_token = account.get("api_token") or account.get("id")
+        if not api_token or api_token == "Api Token":
+            return {"aaData": []}, False
+            
+        api_url = "http://147.135.212.197/crapi/st/viewstats"
+        params = {"token": api_token, "records": 50}
+        
+        
+        r = account_session.get(api_url, params=params, timeout=30)
+        
+        if r.status_code == 200:
+            data = r.json()
+            
+            if isinstance(data, list):
+                formatted_rows = []
+                for item in data:
+                    if isinstance(item, list) and len(item) >= 4:
+                        row = [None] * 6
+                        row[0] = item[3] 
+                        row[1] = item[0] 
+                        row[2] = item[1] 
+                        row[5] = item[2] 
+                        formatted_rows.append(row)
+                return {"aaData": formatted_rows}, False
+        else:
+            print(f"[Number_Panel] API Status Error: {r.status_code}")
+        return {"aaData": []}, False
+    except Exception as e:
+        print(f"[Number_Panel] API Exception: {e}")
+        return None, False
+
+def sms_loop_for_number_panel_account(site_key, account):
+    account_id = account.get("id")
+    api_token = account.get("api_token") or account_id
+    site_name = SETTINGS[site_key]["name"]
+    check_interval = SETTINGS[site_key].get("check_interval", 5)
+    
+    account_session = requests.Session()
+    account_session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    })
+    
+    safe_id = "".join(x for x in api_token if x.isalnum())[:15]
+    last_message_file = f"last_message_{site_key}_{safe_id}.txt"
+    last_seen_key_local = ""
+    
+    if os.path.exists(last_message_file):
+        try:
+            with open(last_message_file, "r", encoding="utf-8") as f:
+                last_seen_key_local = f.read().strip()
+        except: pass
+
+    print_monitoring_box(site_name, f"TOKEN: {api_token[:10]}...", "🌐", "بدء المراقبة عبر API...")
+    
+    while True:
+        try:
+            j, _ = fetch_ajax_data_np(account_session, site_key, {"api_token": api_token})
+            rows = extract_rows_from_json_site3(j)
+            
+            if rows:
+                valid_rows = []
+                for row in rows:
+                    if isinstance(row, list) and len(row) > 5:
+                        date_str = clean_html_site2(row[0])
+                        number = clean_number(row[2])
+                        sms = clean_html_site2(row[5])
+                        service_name_api = clean_html_site2(row[1]) if row[1] else ""
+                        key = f"{date_str}|{number}|{sms}"
+                        if date_str and number and sms:
+                            valid_rows.append((date_str, number, sms, key, service_name_api))
+                
+                if valid_rows:
+                    def get_dt(r):
+                        try: return datetime.strptime(r[0], "%Y-%m-%d %H:%M:%S")
+                        except: return datetime.min
+                    
+                    valid_rows.sort(key=get_dt, reverse=True)
+                    
+                    if not last_seen_key_local:
+                        
+                        r = valid_rows[0]
+                        date_str, number, sms, key, s_name = r
+                        otp_val, sms_text = extract_from_message(sms)
+                        display_name = f"[{s_name}]" if s_name else f"[{detect_service(sms)}]"
+                        formatted_msg = format_otp_message_v2(number, sms_text, display_name, otp_val)
+                        
+                        
+                        send_otp_to_user(clean_number(number), formatted_msg, number, None, otp_val)
+                        
+                        last_seen_key_local = key
+                        with open(last_message_file, "w", encoding="utf-8") as f:
+                            f.write(last_seen_key_local)
+                        print(f"[{site_name}] Initialized and sent latest code: {last_seen_key_local[:20]}...")
+                    else:
+                        new_msgs = []
+                        for r in valid_rows:
+                            if r[3] == last_seen_key_local:
+                                break
+                            new_msgs.append(r)
+                        
+                        if new_msgs:
+                            new_msgs.reverse() 
+                            for r in new_msgs:
+                                date_str, number, sms, key, s_name = r
+                                otp_val, sms_text = extract_from_message(sms)
+                                display_name = f"[{s_name}]" if s_name else f"[{detect_service(sms)}]"
+                                formatted_msg = format_otp_message_v2(number, sms_text, display_name, otp_val)
+                                send_otp_to_user(clean_number(number), formatted_msg, number, None, otp_val)
+                                last_seen_key_local = key
+                            
+                            with open(last_message_file, "w", encoding="utf-8") as f:
+                                f.write(last_seen_key_local)
+            
+            time.sleep(check_interval)
+        except Exception as e:
+            print(f"[{site_name}] Loop Error: {e}")
+            time.sleep(10)
+
+
+def login_site4():
+    global is_logged_in_site4
+    print("[Site4/Bolt] 🔄 محاولة تسجيل الدخول...")
+    
+    try:
+        session4.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
+        })
+        
+        resp = session4.get(LOGIN_PAGE_URL4, timeout=HTTP_TIMEOUT4)
+        print(f"[Site4/Bolt] 📄 حالة GET: {resp.status_code}")
+        
+        match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
+        if not match:
+            print("[Site4/Bolt] ⚠️ لم يتم العثور على captcha في الصفحة")
+            print(f"[Site4/Bolt] 📋 عينة من المحتوى: {resp.text[:500]}")
+            return False
+        
+        num1, num2 = int(match.group(1)), int(match.group(2))
+        captcha_answer = num1 + num2
+        print(f"[Site4/Bolt] 🧮 حل captcha: {num1} + {num2} = {captcha_answer}")
+        
+        crlf_match = re.search(r"name='crlf' value='([^']+)'", resp.text)
+        
+        payload = {
+            "username": USERNAME4,
+            "password": PASSWORD4,
+            "capt": str(captcha_answer)
+        }
+        
+        if crlf_match:
+            payload["crlf"] = crlf_match.group(1)
+            print(f"[Site4/Bolt] 🔑 استخراج crlf token")
+        else:
+            print(f"[Site4/Bolt] ⚠️ لم يتم العثور على crlf token")
+        
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": LOGIN_PAGE_URL4,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Origin": BASE_URL4
+        }
+        
+        print(f"[Site4/Bolt] 📤 إرسال طلب تسجيل الدخول لـ: {USERNAME4}")
+        resp = session4.post(LOGIN_POST_URL4, data=payload, headers=headers, timeout=HTTP_TIMEOUT4, allow_redirects=True)
+        
+        print(f"[Site4/Bolt] 📊 حالة POST: {resp.status_code}")
+        print(f"[Site4/Bolt] 🔗 URL النهائي: {resp.url}")
+        
+        if ("dashboard" in resp.text.lower() or 
+            "logout" in resp.text.lower() or 
+            "agent" in resp.url.lower() or 
+            "reports" in resp.url.lower() or
+            resp.url != LOGIN_PAGE_URL4):
+            print("[Site4/Bolt] ✅ تسجيل الدخول نجح")
+            is_logged_in_site4 = True
+            save_cookies_site4()
+            return True
+        else:
+            print("[Site4/Bolt] ❌ فشل تسجيل الدخول")
+            if "incorrect" in resp.text.lower() or "invalid" in resp.text.lower():
+                print("[Site4/Bolt] ⚠️ اسم المستخدم أو كلمة المرور غير صحيحة")
+            return False
+            
+    except Exception as e:
+        print(f"[Site4/Bolt] ❌ خطأ في تسجيل الدخول: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def build_ajax_url_site4(start_date=None, end_date=None, wide_range=False):
+    if wide_range:
+        start_date = date.today() - timedelta(days=7)
+        end_date = date.today() + timedelta(days=1)
+    else:
+        if start_date is None:
+            start_date = date.today()
+        if end_date is None:
+            end_date = date.today() + timedelta(days=1)
+    
+    fdate1 = f"{start_date.strftime('%Y-%m-%d')} 00:00:00"
+    fdate2 = f"{end_date.strftime('%Y-%m-%d')} 23:59:59"
+    
+    return {
+        'url': BASE_URL4 + AJAX_PATH4,
+        'params': {
+            'fdate1': fdate1,
+            'fdate2': fdate2,
+            'frange': '',
+            'fclient': '',
+            'fnum': '',
+            'fcli': '',
+            'fgdate': '',
+            'fgmonth': '',
+            'fgrange': '',
+            'fgclient': '',
+            'fgnumber': '',
+            'fgcli': '',
+            'fg': '0',
+            'sEcho': '1',
+            'iColumns': '8',
+            'sColumns': '',
+            'iDisplayStart': '0',
+            'iDisplayLength': '100',
+            'mDataProp_0': '0',
+            'mDataProp_1': '1',
+            'mDataProp_2': '2',
+            'mDataProp_3': '3',
+            'mDataProp_4': '4',
+            'mDataProp_5': '5',
+            'mDataProp_6': '6',
+            'mDataProp_7': '7',
+            'sSearch': '',
+            'bRegex': 'false',
+            'iSortCol_0': '0',
+            'sSortDir_0': 'desc',
+            'iSortingCols': '1'
+        }
+    }
+
+def fetch_ajax_json_site4(url_dict, retry_count=0):
+    global is_logged_in_site4
+    
+    ajax_headers = {
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': BASE_URL4 + "/agent/SMSCDRReports"
+    }
+    
+    try:
+        print(f"[Site4/Bolt] 📡 إرسال طلب AJAX إلى: {url_dict['url']}")
+        r = session4.post(url_dict['url'], data=url_dict['params'], headers=ajax_headers, timeout=HTTP_TIMEOUT4)
+        print(f"[Site4/Bolt] 📊 حالة API: {r.status_code}, URL: {r.url[:80]}")
+        
+        if r.status_code == 403 or (r.status_code == 200 and 'login' in r.url.lower()):
+            is_logged_in_site4 = False
+            print("[Site4/Bolt] 🔄 انتهت الجلسة - إعادة تسجيل الدخول...")
+            if login_site4():
+                is_logged_in_site4 = True
+                save_cookies_site4()
+                r = session4.post(url_dict['url'], data=url_dict['params'], headers=ajax_headers, timeout=HTTP_TIMEOUT4)
+                print(f"[Site4/Bolt] 📊 حالة API بعد إعادة التسجيل: {r.status_code}")
+            else:
+                return None
+        
+        r.raise_for_status()
+        data = r.json()
+        print(f"[Site4/Bolt] 🔎 نوع البيانات: {type(data)}, حجم: {len(str(data))}")
+        
+        if data:
+            rows_count = 0
+            if isinstance(data, dict):
+                print(f"[Site4/Bolt] 🔑 مفاتيح JSON: {list(data.keys())[:10]}")
+                for key in ("data", "aaData", "rows"):
+                    if key in data and isinstance(data[key], list):
+                        rows_count = len(data[key])
+                        print(f"[Site4/Bolt] ✅ وجدنا {rows_count} رسالة في '{key}'")
+                        break
+            elif isinstance(data, list):
+                rows_count = len(data)
+                print(f"[Site4/Bolt] ✅ القائمة تحتوي على {rows_count} عنصر")
+            
+            if rows_count == 0:
+                print(f"[Site4/Bolt] ⚠️ الاستجابة فارغة: {str(data)[:300]}")
+        else:
+            print(f"[Site4/Bolt] ⚠️ البيانات None أو فارغة")
+        
+        return data if isinstance(data, (dict, list)) else None
+    except Exception as e:
+        print(f"[Site4/Bolt] ❌ خطأ في جلب البيانات: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def extract_rows_from_json_site4(j):
+    if j is None:
+        return []
+    for key in ("data", "aaData", "rows"):
+        if isinstance(j, dict) and key in j:
+            return j[key]
+    return j if isinstance(j, list) else []
+
+def is_hotmelo_message(message):
+    message_lower = message.lower()
+    hotmelo_keywords = ["hotmelo", "hot melo", "hot-melo", "hotmelon"]
+    return any(keyword in message_lower for keyword in hotmelo_keywords)
+
+def filter_hotmelo_messages_site4(rows):
+    IDX_DATE_SITE4 = 0
+    IDX_NUMBER_SITE4 = 2
+    IDX_SMS_SITE4 = 5
+    
+    hotmelo_messages = []
+    other_messages = []
+    
+    for row in rows:
+        if isinstance(row, list) and len(row) > IDX_SMS_SITE4:
+            date_val = clean_html_site2(row[IDX_DATE_SITE4])
+            number_val = clean_number(row[IDX_NUMBER_SITE4])
+            sms_val = clean_html_site2(row[IDX_SMS_SITE4]) if row[IDX_SMS_SITE4] else ""
+            
+            if (date_val and '-' in date_val and ':' in date_val and 
+                number_val and len(number_val) >= 10 and 
+                sms_val and len(sms_val) > 5):
+                
+                if is_hotmelo_message(sms_val):
+                    hotmelo_messages.append(row)
+                else:
+                    other_messages.append(row)
+    
+    return hotmelo_messages + other_messages
+
+def row_to_tuple_site4(row):
+    IDX_DATE_SITE4 = 0
+    IDX_NUMBER_SITE4 = 2
+    IDX_SMS_SITE4 = 5
+    
+    date_str = clean_html_site2(row[IDX_DATE_SITE4]) if len(row) > IDX_DATE_SITE4 else ""
+    number = clean_number(row[IDX_NUMBER_SITE4]) if len(row) > IDX_NUMBER_SITE4 else ""
+    sms = clean_html_site2(row[IDX_SMS_SITE4]) if len(row) > IDX_SMS_SITE4 else ""
+    key = f"{date_str}|{number}|{sms}"
+    return date_str, number, sms, key
+
+def load_last_seen_key_site4():
+    global last_seen_key_site4
+    if os.path.exists(LAST_MESSAGE_FILE_SITE4):
+        with open(LAST_MESSAGE_FILE_SITE4, "r", encoding="utf-8") as f:
+            last_seen_key_site4 = f.read().strip()
+            print(f"[Site4/Bolt] 📋 تم تحميل آخر رسالة: {last_seen_key_site4[:50]}...")
+
+def save_last_seen_key_site4():
+    with open(LAST_MESSAGE_FILE_SITE4, "w", encoding="utf-8") as f:
+        f.write(last_seen_key_site4)
+
+def verify_session_site4():
+    try:
+        test_url = build_ajax_url_site4(wide_range=False)
+        ajax_headers = {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': BASE_URL4 + "/agent/SMSCDRReports"
+        }
+        r = session4.post(test_url['url'], data=test_url['params'], headers=ajax_headers, timeout=HTTP_TIMEOUT4)
+        
+        if r.status_code == 403 or 'login' in r.url.lower():
+            return False
+        
+        r.raise_for_status()
+        return True
+    except:
+        return False
+
+def verify_session_site3():
+    try:
+        test_url = build_ajax_url_site3(wide_range=False)
+        ajax_headers = {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': BASE_URL3 + "/agent/SMSCDRReports"
+        }
+        r = session3.post(test_url['url'], data=test_url['params'], headers=ajax_headers, timeout=HTTP_TIMEOUT3)
+        
+        if r.status_code == 403 or 'login' in r.url.lower():
+            return False
+        
+        r.raise_for_status()
+        return True
+    except:
+        return False
+
+def login_site5():
+    
+    global is_logged_in_site5, csrf_token_site5
+    print("[iVASMS] 🔄 محاولة تسجيل الدخول...")
+    
+    try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        
+        resp = session5.get(LOGIN_PAGE_URL5, timeout=HTTP_TIMEOUT5)
+        print(f"[iVASMS] 📄 حالة GET: {resp.status_code}")
+        
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        csrf_input = soup.find('input', {'name': '_token'})
+        if not csrf_input:
+            print("[iVASMS] ⚠️ لم يتم العثور على CSRF token")
+            return False
+        
+        csrf = csrf_input.get('value')
+        if not csrf:
+            print("[iVASMS] ⚠️ CSRF token فارغ")
+            return False
+        print(f"[iVASMS] 🔑 استخراج CSRF token: {csrf[:20] if len(str(csrf)) > 20 else csrf}...")
+        
+        payload = {
+            '_token': csrf,
+            'email': USERNAME5,
+            'password': PASSWORD5,
+        }
+        
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": LOGIN_PAGE_URL5,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+        
+        print(f"[iVASMS] 📤 إرسال طلب تسجيل الدخول لـ: {USERNAME5}")
+        resp = session5.post(LOGIN_POST_URL5, data=payload, headers=headers, timeout=HTTP_TIMEOUT5, allow_redirects=True)
+        
+        print(f"[iVASMS] 📊 حالة POST: {resp.status_code}")
+        print(f"[iVASMS] 🔗 URL النهائي: {resp.url}")
+        
+        if 'portal' in resp.url or (resp.status_code == 200 and 'login' not in resp.url):
+            print("[iVASMS] ✅ تسجيل الدخول نجح")
+            is_logged_in_site5 = True
+            
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            csrf_input = soup.find('input', {'name': '_token'})
+            if csrf_input:
+                csrf_token_site5 = csrf_input.get('value')
+            
+            return True
+        else:
+            print("[iVASMS] ❌ فشل تسجيل الدخول")
+            return False
+            
+    except Exception as e:
+        print(f"[iVASMS] ❌ خطأ في تسجيل الدخول: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def verify_session_site5():
+    
+    global csrf_token_site5
+    try:
+        resp = session5.get(SMS_RECEIVED_URL5, timeout=HTTP_TIMEOUT5)
+        if 'login' in resp.url.lower():
+            return False
+        
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        csrf_input = soup.find('input', {'name': '_token'})
+        if csrf_input:
+            csrf_token_site5 = csrf_input.get('value')
+            return True
+        return False
+    except:
+        return False
+
+def get_csrf_token_site5():
+    
+    global csrf_token_site5
+    try:
+        resp = session5.get(SMS_RECEIVED_URL5, timeout=HTTP_TIMEOUT5)
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        csrf_input = soup.find('input', {'name': '_token'})
+        if csrf_input:
+            csrf_token_site5 = csrf_input.get('value')
+            return True
+    except Exception as e:
+        print(f"[iVASMS] ❌ خطأ في جلب CSRF token: {e}")
+    return False
+
+def sms_loop_for_ivasms_account(site_key, account):
+    
+    global account_stop_events
+    account_id = account.get("id")
+    username = account.get("username")
+    password = account.get("password")
+    api_key = account.get("api_key", "")
+    site_name = SETTINGS[site_key]["name"]
+    
+    stop_key = f"{site_key}_{account_id}"
+    account_stop_events[stop_key] = Event()
+    stop_event = account_stop_events[stop_key]
+    
+    API_URL = SETTINGS[site_key].get("api_url", "https://maroon-wombat-183778.hostingersite.com/apiivasms/api.php")
+    HTTP_TIMEOUT5 = SETTINGS[site_key]["timeout"]
+    CHECK_INTERVAL5 = SETTINGS[site_key]["check_interval"]
+    
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
+    sent_messages_local = set()
+    message_lock = threading.Lock()
+    
+    def load_sent_messages():
+        nonlocal sent_messages_local
+        sent_file = f"sent_messages_{site_key}_{account_id}.json"
+        if os.path.exists(sent_file):
+            try:
+                with open(sent_file, 'r') as f:
+                    sent_messages_local = set(json.load(f))
             except:
-                continue
-        f = io.BytesIO(content.encode())
-        f.name = f"USER_{target_uid}.txt"
-        await context.bot.send_document(
-            chat_id=uid, document=f,
-            caption=pe(f"✅ <b>DATA FOR USER: <code>{target_uid}</code></b>"),
-            parse_mode="HTML"
-        )
+                sent_messages_local = set()
+    
+    def save_sent_messages():
+        sent_file = f"sent_messages_{site_key}_{account_id}.json"
+        try:
+            msgs = list(sent_messages_local)[-500:]
+            with open(sent_file, 'w') as f:
+                json.dump(msgs, f)
+        except Exception as e:
+            print(f"[{site_name}] ({username}) ❌ خطأ في حفظ الرسائل المرسلة: {e}")
+    
+    def fetch_sms_via_api():
+        try:
+            params = {
+                'api_key': api_key,
+                'username': username,
+                'password': password,
+                '_t': int(time.time() * 1000)
+            }
+            resp = requests.get(API_URL, params=params, timeout=HTTP_TIMEOUT5, verify=False)
+            
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    if data.get('success') and data.get('codes'):
+                        return data['codes']
+                    elif data.get('success'):
+                        return []
+                    else:
+                        error_msg = data.get('error', data.get('message', 'Unknown error'))
+                        print(f"[{site_name}] ({username}) ⚠️ API خطأ: {error_msg}")
+                        return []
+                except json.JSONDecodeError:
+                    print(f"[{site_name}] ({username}) ⚠️ استجابة غير صالحة JSON")
+                    return []
+            else:
+                print(f"[{site_name}] ({username}) ❌ حالة الاستجابة: {resp.status_code}")
+                return []
+        except Exception as e:
+            print(f"[{site_name}] ({username}) ❌ خطأ في جلب البيانات: {e}")
+            return []
+    
+    if not api_key:
+        print_monitoring_box(site_name, username, "❌", "مفتاح API غير موجود!")
         return
+    
+    print_monitoring_box(site_name, username, "🌐", "بدء المراقبة عبر API...")
+    load_sent_messages()
+    print(f"[{site_name}] ({username}) ✅ بدء المراقبة كل {CHECK_INTERVAL5} ثانية... (API مفعل)")
+    
+    while not stop_event.is_set():
+        try:
+            if stop_event.is_set():
+                break
+                
+            messages = fetch_sms_via_api()
+            
+            if stop_event.is_set():
+                break
+            
+            new_count = 0
+            for msg in messages:
+                if stop_event.is_set():
+                    break
+                
+                phone = msg.get('phone', msg.get('number', ''))
+                message_text = msg.get('message', msg.get('sms', msg.get('text', '')))
+                msg_time = msg.get('time', msg.get('date', datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                
+                if not phone or not message_text:
+                    continue
+                    
+                msg_key = f"{phone}|{message_text[:50]}"
+                
+                if msg_key not in sent_messages_local:
+                    otp_val, sms_text = extract_from_message(message_text)
+                    service_name = f"[{detect_service(message_text)}]"
+                    formatted_msg = format_otp_message_v2(phone, sms_text, service_name, otp_val)
+                    
+                    send_otp_to_user(clean_number(phone), formatted_msg, phone, None, otp_val)
+                    if True:
+                        print(f"✅ {site_name} ({username}): تم إرسال الكود لـ {mask_number(phone)}")
+                    
+                    sent_messages_local.add(msg_key)
+                    new_count += 1
+            
+            if new_count > 0:
+                save_sent_messages()
+                print(f"[{site_name}] ({username}) 📨 تم إرسال {new_count} رسالة جديدة")
+            else:
+                print_monitoring_box(site_name, username, "📭", "لا توجد أكواد")
+            
+        except Exception as e:
+            if stop_event.is_set():
+                break
+            print_monitoring_box(site_name, username, "❌", f"خطأ غير متوقع: {str(e)}")
+            time.sleep(10)
+        
+        if stop_event.wait(CHECK_INTERVAL5):
+            break
+    
+    print(f"[{site_name}] ({username}) 🛑 تم إيقاف المراقبة بنجاح")
 
-# ==================== MAIN & POST INIT SECTION ====================
+def sms_loop_requests_based(site_key, account):
+    
+    global account_stop_events
+    
+    account_id = account.get("id")
+    username = account.get("username")
+    password = account.get("password")
+    site_name = SETTINGS[site_key]["name"]
+    
+    stop_key = f"{site_key}_{account_id}"
+    account_stop_events[stop_key] = Event()
+    stop_event = account_stop_events[stop_key]
+    
+    BASE_URL = SETTINGS[site_key]["base_url"]
+    if not BASE_URL.startswith("http"):
+        BASE_URL = "http://" + BASE_URL.lstrip(":")
+    
+    LOGIN_PAGE_URL = SETTINGS[site_key]["login_page_url"]
+    LOGIN_POST_URL = SETTINGS[site_key]["login_post_url"]
+    AJAX_PATH = SETTINGS[site_key].get("ajax_path", "/agent/res/data_smscdr.php")
+    CHECK_INTERVAL = SETTINGS[site_key]["check_interval"]
+    TIMEOUT_LOCAL = SETTINGS[site_key].get("timeout", 60)
+    
+    if "/ints" in BASE_URL:
+        AJAX_URL = BASE_URL + AJAX_PATH
+    elif "/ints" in AJAX_PATH:
+        AJAX_URL = BASE_URL + AJAX_PATH
+    else:
+        AJAX_URL = BASE_URL + AJAX_PATH
+    
+    print(f"[{site_name}] ({username}) 🔗 AJAX URL: {AJAX_URL}")
+    
+    last_message_file = f"last_message_{site_key}_{account_id}.txt"
+    sent_messages_file = f"sent_messages_{site_key}_{account_id}.json"
+    last_seen_key_local = ""
+    sent_messages_local = set()
+    session = requests.Session()
+    session.verify = False
+    is_logged_in = False
+    
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0',
+    })
+    
+    def load_last_seen():
+        nonlocal last_seen_key_local
+        if os.path.exists(last_message_file):
+            try:
+                with open(last_message_file, "r", encoding="utf-8") as f:
+                    last_seen_key_local = f.read().strip()
+            except:
+                last_seen_key_local = ""
+    
+    def save_last_seen():
+        try:
+            with open(last_message_file, "w", encoding="utf-8") as f:
+                f.write(last_seen_key_local)
+        except:
+            pass
+    
+    def load_sent_messages():
+        nonlocal sent_messages_local
+        if os.path.exists(sent_messages_file):
+            try:
+                with open(sent_messages_file, 'r') as f:
+                    sent_messages_local = set(json.load(f))
+            except:
+                sent_messages_local = set()
+    
+    def save_sent_messages():
+        try:
+            msgs = list(sent_messages_local)[-500:]
+            with open(sent_messages_file, 'w') as f:
+                json.dump(msgs, f)
+        except:
+            pass
+    
+    def login():
+        nonlocal is_logged_in
+        print(f"[{site_name}] ({username}) 🔐 تسجيل الدخول...")
+        
+        try:
+            resp = session.get(LOGIN_PAGE_URL, timeout=TIMEOUT_LOCAL)
+            
+            if resp.status_code != 200:
+                print(f"[{site_name}] ({username}) ⚠️ فشل فتح صفحة الدخول: {resp.status_code}")
+                return False
+            
+            match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
+            if not match:
+                match = re.search(r'(\d+)\s*\+\s*(\d+)', resp.text)
+            
+            if not match:
+                print(f"[{site_name}] ({username}) ⚠️ لم يتم العثور على Captcha، محاولة بدون captcha...")
+                captcha_answer = ""
+            else:
+                captcha_answer = str(int(match.group(1)) + int(match.group(2)))
+                print(f"[{site_name}] ({username}) 🧮 Captcha: {match.group(1)} + {match.group(2)} = {captcha_answer}")
+            
+            crlf_match = re.search(r"name=['\"]crlf['\"].*?value=['\"]([^'\"]+)['\"]", resp.text)
+            if not crlf_match:
+                crlf_match = re.search(r"value=['\"]([^'\"]+)['\"].*?name=['\"]crlf['\"]", resp.text)
+            
+            payload = {
+                'username': username,
+                'password': password,
+            }
+            if captcha_answer:
+                payload['capt'] = captcha_answer
+            
+            if crlf_match:
+                payload['crlf'] = crlf_match.group(1)
+                print(f"[{site_name}] ({username}) 🔑 تم استخراج crlf token")
+            
+            headers = {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Referer': LOGIN_PAGE_URL,
+                'Origin': BASE_URL.rstrip('/'),
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            }
+            
+            resp = session.post(LOGIN_POST_URL, data=payload, headers=headers, timeout=TIMEOUT_LOCAL, allow_redirects=True)
+            
+            print(f"[{site_name}] ({username}) 📊 Response URL: {resp.url}")
+            
+            if ("dashboard" in resp.text.lower() or 
+                "logout" in resp.text.lower() or 
+                "agent" in resp.url.lower() or 
+                "reports" in resp.url.lower() or 
+                "smscdr" in resp.text.lower() or
+                "signin" in resp.text.lower() or
+                resp.url != LOGIN_PAGE_URL):
+                print(f"[{site_name}] ({username}) ✅ تسجيل الدخول نجح")
+                is_logged_in = True
+                return True
+            
+            if 'dashboard' in resp.text.lower() or 'logout' in resp.text.lower() or 'reports' in resp.url.lower():
+                print(f"[{site_name}] ({username}) ✅ تسجيل الدخول نجح (dashboard detected)")
+                is_logged_in = True
+                return True
+            
+            if resp.url != LOGIN_PAGE_URL and 'login' not in resp.url.lower():
+                print(f"[{site_name}] ({username}) ✅ تسجيل الدخول نجح (redirected)")
+                is_logged_in = True
+                return True
+            
+            sms_page_path = "/agent/SMSCDRReports" if "/ints" in BASE_URL else "/ints/agent/SMSCDRReports"
+            test_resp = session.get(BASE_URL.rstrip('/') + sms_page_path, timeout=15)
+            if test_resp.status_code == 200 and 'login' not in test_resp.url.lower():
+                print(f"[{site_name}] ({username}) ✅ تسجيل الدخول نجح (verified)")
+                is_logged_in = True
+                return True
+            
+            print(f"[{site_name}] ({username}) ❌ فشل تسجيل الدخول")
+            return False
+            
+        except Exception as e:
+            print(f"[{site_name}] ({username}) ❌ خطأ في تسجيل الدخول: {e}")
+            return False
+    
+    def get_sesskey_from_page(html_text):
+        match = re.search(r'sesskey=([A-Za-z0-9=]+)', html_text)
+        if match:
+            return match.group(1)
+        return None
+    
+    current_sesskey = None
+    
+    def fetch_sms_data():
+        nonlocal is_logged_in, current_sesskey
+        
+        sms_page_path = "/agent/SMSCDRReports" if "/ints" in BASE_URL else "/ints/agent/SMSCDRReports"
+        referer_url = BASE_URL.rstrip('/') + sms_page_path
+        
+        if site_key == "GROUP":
+            for retry in range(3):
+                try:
+                    page_resp = session.get(referer_url, timeout=TIMEOUT_LOCAL)
+                    
+                    if page_resp.status_code == 200:
+                        if 'login' in page_resp.text.lower() and 'password' in page_resp.text.lower():
+                            soup = BeautifulSoup(page_resp.text, 'html.parser')
+                            login_form = soup.find('input', {'name': 'password'})
+                            if login_form:
+                                is_logged_in = False
+                                print(f"[{site_name}] ({username}) ⚠️ الجلسة انتهت، إعادة تسجيل الدخول...")
+                                return []
+                        
+                        sesskey = get_sesskey_from_page(page_resp.text)
+                        if sesskey:
+                            current_sesskey = sesskey
+                            print(f"[{site_name}] ({username}) 🔑 تم استخراج sesskey")
+                            
+                            today = datetime.now().strftime('%Y-%m-%d')
+                            ajax_url = BASE_URL + AJAX_PATH
+                            params = {
+                                'fdate1': f'{today} 00:00:00',
+                                'fdate2': f'{today} 23:59:59',
+                                'frange': '',
+                                'fclient': '',
+                                'fnum': '',
+                                'fcli': '',
+                                'fgdate': '',
+                                'fgmonth': '',
+                                'fgrange': '',
+                                'fgclient': '',
+                                'fgnumber': '',
+                                'fgcli': '',
+                                'fg': '0',
+                                'sesskey': sesskey
+                            }
+                            
+                            ajax_headers = {
+                                'Accept': 'application/json, text/javascript, */*; q=0.01',
+                                'X-Requested-With': 'XMLHttpRequest',
+                                'Referer': referer_url
+                            }
+                            
+                            ajax_resp = session.get(ajax_url, params=params, headers=ajax_headers, timeout=TIMEOUT_LOCAL)
+                            
+                            if ajax_resp.status_code == 200:
+                                try:
+                                    data = ajax_resp.json()
+                                    if 'aaData' in data:
+                                        rows = data['aaData']
+                                        if rows:
+                                            print(f"[{site_name}] ({username}) ✅ تم جلب {len(rows)} رسالة عبر AJAX")
+                                            return rows
+                                    elif isinstance(data, list):
+                                        if data:
+                                            print(f"[{site_name}] ({username}) ✅ تم جلب {len(data)} رسالة عبر AJAX")
+                                            return data
+                                except:
+                                    pass
+                        
+                        soup = BeautifulSoup(page_resp.text, 'html.parser')
+                        table = soup.find('table')
+                        if table:
+                            tbody = table.find('tbody')
+                            rows = tbody.find_all('tr') if tbody else table.find_all('tr')[1:]
+                            data_rows = []
+                            for row in rows:
+                                cells = row.find_all('td')
+                                if len(cells) >= 6:
+                                    data_rows.append([cell.get_text(strip=True) for cell in cells])
+                            if data_rows:
+                                print(f"[{site_name}] ({username}) 📄 استخدام HTML parsing كبديل")
+                                return data_rows
+                        return []
+                        
+                    elif page_resp.status_code in [502, 503, 504]:
+                        if retry < 2:
+                            print(f"[{site_name}] ({username}) ⚠️ السيرفر مشغول ({page_resp.status_code}) - محاولة {retry+1}/3...")
+                            time.sleep(3 + retry * 2)
+                            continue
+                        print(f"[{site_name}] ({username}) ⚠️ السيرفر مشغول ({page_resp.status_code})")
+                        return []
+                    else:
+                        print(f"[{site_name}] ({username}) ⚠️ HTTP {page_resp.status_code}")
+                        return []
+                    
+                except Exception as e:
+                    if retry < 2 and ('Connection' in str(e) or 'Timeout' in str(e)):
+                        time.sleep(2)
+                        continue
+                    print(f"[{site_name}] ({username}) ❌ خطأ في جلب البيانات: {e}")
+                    is_logged_in = False
+                    return []
+            return []
+        
+        for retry in range(3):
+            try:
+                headers = {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json, text/javascript, */*; q=0.01',
+                    'Referer': referer_url,
+                    'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
+                }
+                
+                today = datetime.now()
+                start_date = (today - timedelta(days=1)).strftime('%Y-%m-%d')
+                end_date = (today + timedelta(days=1)).strftime('%Y-%m-%d')
+                
+                payload = {
+                    'fdate1': f'{start_date} 00:00:00',
+                    'fdate2': f'{end_date} 23:59:59',
+                    'frange': '',
+                    'fclient': '',
+                    'fnum': '',
+                    'fcli': '',
+                    'fgdate': '',
+                    'fgmonth': '',
+                    'fgrange': '',
+                    'fgclient': '',
+                    'fgnumber': '',
+                    'fgcli': '',
+                    'fg': '0',
+                    'sEcho': '1',
+                    'iColumns': '8',
+                    'sColumns': '',
+                    'iDisplayStart': '0',
+                    'iDisplayLength': '100',
+                    'mDataProp_0': '0',
+                    'mDataProp_1': '1',
+                    'mDataProp_2': '2',
+                    'mDataProp_3': '3',
+                    'mDataProp_4': '4',
+                    'mDataProp_5': '5',
+                    'mDataProp_6': '6',
+                    'mDataProp_7': '7',
+                    'sSearch': '',
+                    'bRegex': 'false',
+                    'iSortCol_0': '0',
+                    'sSortDir_0': 'desc',
+                    'iSortingCols': '1'
+                }
+                
+                resp = session.post(AJAX_URL, data=payload, headers=headers, timeout=TIMEOUT_LOCAL)
+                
+                if resp.status_code == 200:
+                    try:
+                        data = resp.json()
+                        for key in ['data', 'aaData', 'rows']:
+                            if key in data and isinstance(data[key], list):
+                                return data[key]
+                        is_logged_in = False
+                    except Exception as je:
+                        if 'login' in resp.text.lower() or 'signin' in resp.text.lower():
+                            is_logged_in = False
+                            print(f"[{site_name}] ({username}) ⚠️ الجلسة انتهت، إعادة تسجيل الدخول...")
+                        else:
+                            try:
+                                soup = BeautifulSoup(resp.text, 'html.parser')
+                                table = soup.find('table')
+                                if table:
+                                    tbody = table.find('tbody')
+                                    rows = tbody.find_all('tr') if tbody else table.find_all('tr')[1:]
+                                    data_rows = []
+                                    for row in rows:
+                                        cells = row.find_all('td')
+                                        if len(cells) >= 6:
+                                            data_rows.append([cell.get_text(strip=True) for cell in cells])
+                                    if data_rows:
+                                        print(f"[{site_name}] ({username}) 📄 استخدام HTML parsing")
+                                        return data_rows
+                            except:
+                                pass
+                elif resp.status_code == 503:
+                    if retry < 2:
+                        time.sleep(3 + retry * 2)
+                        continue
+                    print(f"[{site_name}] ({username}) ⚠️ السيرفر مشغول (503) - جاري المحاولة بطريقة بديلة...")
+                    try:
+                        page_resp = session.get(referer_url, timeout=TIMEOUT_LOCAL)
+                        if page_resp.status_code == 200:
+                            soup = BeautifulSoup(page_resp.text, 'html.parser')
+                            table = soup.find('table')
+                            if table:
+                                tbody = table.find('tbody')
+                                rows = tbody.find_all('tr') if tbody else table.find_all('tr')[1:]
+                                data_rows = []
+                                for row in rows:
+                                    cells = row.find_all('td')
+                                    if len(cells) >= 6:
+                                        data_rows.append([cell.get_text(strip=True) for cell in cells])
+                                if data_rows:
+                                    print(f"[{site_name}] ({username}) 📄 استخدام HTML parsing (بديل)")
+                                    return data_rows
+                    except Exception as html_e:
+                        print(f"[{site_name}] ({username}) ⚠️ فشل HTML parsing: {html_e}")
+                else:
+                    print(f"[{site_name}] ({username}) ⚠️ HTTP {resp.status_code}")
+                
+                return []
+                
+            except Exception as e:
+                if retry < 2 and ('Connection' in str(e) or 'Timeout' in str(e)):
+                    time.sleep(2)
+                    continue
+                print(f"[{site_name}] ({username}) ❌ خطأ في جلب البيانات: {e}")
+                is_logged_in = False
+                return []
+        return []
+    
+    print_monitoring_box(site_name, username, "🚀", "بدء المراقبة بـ Requests (خفيف وسريع)...")
+    
+    load_last_seen()
+    load_sent_messages()
+    
+    if not login():
+        print_monitoring_box(site_name, username, "❌", "فشل تسجيل الدخول الأولي")
+        return
+    
+    errors = 0
+    print(f"[{site_name}] ({username}) ✅ بدء المراقبة كل {CHECK_INTERVAL} ثانية...")
+    
+    while not stop_event.is_set():
+        try:
+            if stop_event.is_set():
+                break
+            
+            if not is_logged_in:
+                if not login():
+                    time.sleep(30)
+                    continue
+            
+            raw_data = fetch_sms_data()
+            
+            if not raw_data:
+                print_monitoring_box(site_name, username, "📭", "لا توجد أكواد")
+            else:
+                data = []
+                for row in raw_data:
+                    if isinstance(row, list) and len(row) >= 6:
+                        date_str = str(row[0]).strip() if row[0] else ""
+                        number = re.sub(r'\D', '', str(row[2])) if row[2] else ""
+                        sms = str(row[5]).strip() if row[5] else ""
+                        
+                        if date_str and number and len(number) >= 7 and sms:
+                            
+                            if any(x in sms.lower() for x in ["currency", "payout", "nan%", "100%", "0.008", "my payout", "client payout", "range", "number", "cli", "client"]):
+                                continue
+                            
+                            
+                            if sms.count(',') >= 5 and ('%' in sms or 'nan' in sms.lower()):
+                                continue
 
-async def post_init(application):
-    for _ in range(MAX_WORKERS):
-        asyncio.create_task(worker())
-    asyncio.create_task(monitor_loop(application))
-    asyncio.create_task(_bg_refresh_ranges())
+                            
+                            otp_val, _ = extract_from_message(sms)
+                            if not otp_val and len(sms) < 5: 
+                                continue
+                                
+                            data.append({'date': date_str, 'number': number, 'sms': sms})
+                
+                if not data:
+                    print_monitoring_box(site_name, username, "📭", "لا توجد أكواد")
+                else:
+                    data.sort(key=lambda x: x['date'], reverse=False) 
+                    
+                    new_messages = []
+                    for msg in data:
+                        key = f"{msg['date']}|{msg['number']}"
+                        if key == last_seen_key_local:
+                            new_messages = [] 
+                            continue
+                        if key not in sent_messages_local:
+                            new_messages.append(msg)
+                    
+                    if new_messages:
+                        print(f"[{site_name}] ({username}) 📨 {len(new_messages)} رسالة جديدة")
+                        
+                        
+                        for msg in new_messages:
+                            date_str = msg['date']
+                            number = msg['number']
+                            sms = msg['sms']
+                            
+                            otp_val, sms_text = extract_from_message(sms)
+                            service_name = f"[{detect_service(sms)}]"
+                            formatted_msg = format_otp_message_v2(number, sms_text, service_name, otp_val)
+                            
+                            if otp_val:
+                                print(f"🔑 {site_name} ({username}): لقيت كود {otp_val}")
+                            
+                            send_otp_to_user(clean_number(number), formatted_msg, number, None, otp_val)
+                            
+                           
+                            key = f"{date_str}|{number}"
+                            sent_messages_local.add(key)
+                            last_seen_key_local = key
+                        
+                        save_last_seen()
+                        save_sent_messages()
+                    else:
+                        print_monitoring_box(site_name, username, "📭", "لا توجد أكواد")
+            
+            errors = 0
+            
+        except Exception as e:
+            errors += 1
+            print_monitoring_box(site_name, username, "❌", f"خطأ ({errors}/5): {str(e)[:40]}")
+            if errors >= 5:
+                print(f"[{site_name}] ({username}) 🔄 إعادة تسجيل الدخول...")
+                if login():
+                    errors = 0
+                else:
+                    time.sleep(30)
+            time.sleep(5)
+        
+        if stop_event.wait(CHECK_INTERVAL):
+            break
+    
+    print(f"[{site_name}] ({username}) 🛑 تم إيقاف المراقبة")
 
-async def post_shutdown(application):
-    await client_async.aclose()
+def login_site8(account):
+    username = account.get("username")
+    password = account.get("password")
+    
+    
+    session = requests.Session()
+    session.verify = False
+    
+    print(f"[Site8/IMS] ({username}) 🔄 تسجيل الدخول...")
+    try:
+       
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate",
+            "Connection": "keep-alive"
+        })
+        
+        response = session.get(LOGIN_PAGE_URL8, timeout=HTTP_TIMEOUT8)
+        if response.status_code == 403:
+            
+            response = session.get(LOGIN_PAGE_URL8, timeout=HTTP_TIMEOUT8, headers={"User-Agent": "Mozilla/5.0"})
+        
+        if response.status_code != 200:
+            print(f"[Site8/IMS] ({username}) [!] فشل فتح صفحة الدخول: {response.status_code}")
+            return False, None
+        
+        html_content = response.text
+        
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        csrf_token = None
+        csrf_input = soup.find('input', {'name': '_token'})
+        if csrf_input:
+            csrf_token = str(csrf_input.get('value'))
+        if not csrf_token:
+            csrf_input = soup.find('input', {'name': 'csrf_token'})
+            if csrf_input:
+                csrf_token = str(csrf_input.get('value'))
+        if not csrf_token:
+            csrf_meta = soup.find('meta', {'name': 'csrf-token'})
+            if csrf_meta:
+                csrf_token = str(csrf_meta.get('content'))
+        if not csrf_token:
+            match = re.search(r'name=["\']_token["\'].*?value=["\']([^"\']+)["\']', html_content)
+            if match:
+                csrf_token = match.group(1)
+        
+        if csrf_token:
+            print(f"[Site8/IMS] ({username}) [*] CSRF Token: {csrf_token[:20]}...")
+        
+        
+        captcha_answer = None
+        
+        patterns = [
+            r'(\d+)\s*\+\s*(\d+)\s*=', 
+            r'What is (\d+) \+ (\d+)', 
+            r'(\d+)\s*plus\s*(\d+)'
+        ]
+        
+        
+        for pattern in patterns:
+            match = re.search(pattern, html_content, re.IGNORECASE)
+            if match:
+                captcha_answer = str(int(match.group(1)) + int(match.group(2)))
+                break
+        
+        
+        if not captcha_answer:
+            b_tags = soup.find_all('b')
+            nums = []
+            for b in b_tags:
+                text = b.get_text().strip()
+                if text.isdigit():
+                    nums.append(int(text))
+            if len(nums) >= 2:
+                captcha_answer = str(nums[0] + nums[1])
+        
+        if not captcha_answer:
+            
+            text = soup.get_text()
+            for pattern in patterns:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    captcha_answer = str(int(match.group(1)) + int(match.group(2)))
+                    break
+        
+        if not captcha_answer:
+            print(f"[Site8/IMS] ({username}) [!] لم يتم العثور على الكابتشا")
+            return False, None
+        
+        print(f"[Site8/IMS] ({username}) [*] Captcha: {captcha_answer}")
+        
+        login_data = {
+            "username": username,
+            "password": password,
+            "capt": captcha_answer,
+        }
+        
+        if csrf_token:
+            login_data["_token"] = csrf_token
+        
+        form = soup.find('form')
+        if form:
+            for hidden in form.find_all('input', type='hidden'):
+                name = hidden.get('name')
+                value = hidden.get('value')
+                if name and isinstance(name, str) and name not in login_data:
+                    login_data[name] = str(value) if value is not None else ''
 
-def main():
-    if not BOT_TOKEN or BOT_TOKEN == "PASTE_NEW_TELEGRAM_BOT_TOKEN_HERE":
-        raise RuntimeError(
-            "BOT_TOKEN is not configured. Open bot.py and replace "
-            "PASTE_NEW_TELEGRAM_BOT_TOKEN_HERE with your new token."
+        
+        login_headers = {
+            "Referer": LOGIN_PAGE_URL8,
+            "Origin": BASE_URL8,
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+
+        response = session.post(
+            LOGIN_POST_URL8,
+            data=login_data,
+            headers=login_headers,
+            timeout=HTTP_TIMEOUT8,
+            allow_redirects=True
         )
+        
+        print(f"[Site8/IMS] ({username}) [DEBUG] Final URL: {response.url}")
+        
+        if any(x in response.url.lower() for x in ["/agent", "/dashboard", "/home"]) or \
+           (response.status_code == 200 and "login" not in response.url.lower() and "signin" not in response.url.lower()):
+            print(f"[Site8/IMS] ({username}) [+] تسجيل الدخول نجح (Landed on: {response.url})")
+            return True, session
+        
+        content_lower = response.text.lower()
+        if "logout" in content_lower or "smscdr" in content_lower or "agent" in content_lower:
+            print(f"[Site8/IMS] ({username}) [+] تسجيل الدخول نجح (Detected via content)")
+            return True, session
 
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .concurrent_updates(True)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
+        print(f"[Site8/IMS] ({username}) [!] فشل تسجيل الدخول")
+        return False, None
+    except Exception as e:
+        print(f"[Site8/IMS] ({username}) [!] خطأ في تسجيل الدخول: {e}")
+        return False, None
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("get1number", get1number_command))
-    app.add_handler(CommandHandler("searchotp", searchotp_command))
-    app.add_handler(CommandHandler("balance", balance_command))
-    app.add_handler(CommandHandler("profile", profile_command))
-    app.add_handler(CommandHandler("refer", refer_command_slash))
-    app.add_handler(CommandHandler("leaderboard", leaderboard_command_slash))
+def sms_loop_for_ims_account(site_key, account):
+    site_name = SETTINGS[site_key]["name"]
+    username = account.get("username")
+    password = account.get("password")
+    account_id = account.get("id")
+    stop_event = account_stop_events.get(f"{site_key}_{account_id}", Event())
+    
+    session = requests.Session()
+    session.verify = False
+    is_logged_in = False
+    
+    last_message_file = f"last_message_{site_key}_{account_id}.txt"
+    last_seen_key_local = ""
+    
+    def load_last_seen():
+        nonlocal last_seen_key_local
+        if os.path.exists(last_message_file):
+            try:
+                with open(last_message_file, "r", encoding="utf-8") as f:
+                    last_seen_key_local = f.read().strip()
+            except: pass
+    def save_last_seen():
+        try:
+            with open(last_message_file, "w", encoding="utf-8") as f:
+                f.write(last_seen_key_local)
+        except: pass
 
-    app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    print_monitoring_box(site_name, username, "🚀", "بدء المراقبة...")
+    
+    success, new_session = login_site8(account)
+    if success:
+        session = new_session
+        is_logged_in = True
+    else:
+        print_monitoring_box(site_name, username, "❌", "فشل تسجيل الدخول")
+    
+    load_last_seen()
+    errors = 0
+    
+    while not stop_event.is_set():
+        try:
+            
+            current_account = get_account_by_id(site_key, account_id)
+            if current_account and current_account.get("password") != password:
+                print(f"[Site8/IMS] ({username}) 🔑 تم اكتشاف تغيير كلمة المرور، جاري إعادة الدخول...")
+                password = current_account.get("password")
+                success, new_session = login_site8(current_account)
+                if success:
+                    session = new_session
+                    is_logged_in = True
+                else:
+                    is_logged_in = False
+                    time.sleep(30)
+                    continue
 
-    print("🚀 BOT RUNNING...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+            if not is_logged_in:
+                success, new_session = login_site8(current_account or account)
+                if success:
+                    session = new_session
+                    is_logged_in = True
+                else:
+                    time.sleep(30)
+                    continue
+
+            today = datetime.now().strftime('%Y-%m-%d')
+            
+            codes_html = ""
+            try:
+                resp_codes = session.get(BASE_URL8 + "/ints/agent/SMSCDRReports", timeout=HTTP_TIMEOUT8)
+                codes_html = resp_codes.text
+                if 'login' in resp_codes.url.lower():
+                    is_logged_in = False
+                    continue
+            except Exception as e:
+                print(f"[Site8/IMS] ({username}) [!] Error loading codes page: {e}")
+                is_logged_in = False
+                continue
+
+            sesskey = ""
+            sesskey_match = re.search(r'sesskey=([A-Za-z0-9=]+)', codes_html)
+            if sesskey_match:
+                sesskey = sesskey_match.group(1)
+            else:
+                is_logged_in = False
+                continue
+
+            params = {
+                'fdate1': f'{today} 00:00:00',
+                'fdate2': f'{today} 23:59:59',
+                'frange': '', 'fclient': '', 'fnum': '', 'fcli': '',
+                'fgdate': '', 'fgmonth': '', 'fgrange': '', 'fgclient': '',
+                'fgnumber': '', 'fgcli': '', 'fg': '0', 'sesskey': sesskey
+            }
+
+            ajax_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                'Accept': 'application/json, text/javascript, */*; q=0.01',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Referer': BASE_URL8 + "/ints/agent/SMSCDRReports"
+            }
+            
+            r = session.get("http://45.82.67.20/ints/agent/res/data_smscdr.php", params=params, headers=ajax_headers, timeout=HTTP_TIMEOUT8)
+            
+            if r.status_code != 200 or 'login' in r.url.lower():
+                is_logged_in = False
+                continue
+
+            data_json = r.json()
+            if data_json.get('aaData'):
+                rows = data_json['aaData']
+            else:
+                rows = data_json if isinstance(data_json, list) else []
+            
+            if not rows:
+                print_monitoring_box(site_name, username, "📭", "لا توجد أكواد")
+            else:
+                
+                try:
+                    rows.sort(key=lambda x: str(x[0]) if isinstance(x, list) and len(x) > 0 else "", reverse=True)
+                except:
+                    pass
+
+                new_messages = []
+                for row in rows:
+                    if isinstance(row, list) and len(row) >= 6:
+                        date_str = str(row[0]).strip()
+                        number = re.sub(r'\D', '', str(row[2]))
+                        sms = str(row[5]).strip()
+                        
+                        
+                        if sms.count(',') > 3 or sms.count('%') > 1 or 'NAN%' in sms:
+                            continue
+                        
+                        
+                        if re.match(r'^[\d.,%|NAN/]+$', sms):
+                            continue
+                            
+                        key = f"{date_str}|{number}"
+                        if key == last_seen_key_local: break
+                        new_messages.append({'date': date_str, 'number': number, 'sms': sms})
+                
+                if new_messages:
+                    
+                    last_seen_key_local = f"{new_messages[0]['date']}|{new_messages[0]['number']}"
+                    save_last_seen()
+                    
+                    print(f"[{site_name}] ({username}) 📨 {len(new_messages)} رسالة جديدة")
+                   
+                    
+                    for msg in reversed(new_messages):
+                        otp_val, sms_text = extract_from_message(msg['sms'])
+                        
+                        
+                        service_name = f"[{detect_service(sms_text)}]"
+                        formatted_msg = format_otp_message_v2(msg['number'], sms_text, service_name, otp_val)
+                        
+                        print(f"🔑 {site_name} ({username}): لقيت كود {otp_val}")
+                        
+                        success = False
+                        for retry in range(3):
+                            try:
+                                send_otp_to_user(clean_number(msg['number']), formatted_msg, msg['number'], None, otp_val)
+                                success = True
+                                break
+                            except Exception as e:
+                                if "429" in str(e):
+                                    wait_time = 35 
+                                    match = re.search(r'after (\d+)', str(e))
+                                    if match: wait_time = int(match.group(1)) + 2
+                                    print(f"⚠️ Telegram 429 (Flood Control): Waiting {wait_time}s...")
+                                    time.sleep(wait_time)
+                                else:
+                                    print(f"❌ Error sending: {e}")
+                                    break
+                else:
+                    print_monitoring_box(site_name, username, "📭", "لا توجد أكواد")
+            
+            errors = 0
+        except Exception as e:
+            errors += 1
+            if errors >= 5:
+                is_logged_in = False
+            time.sleep(10)
+
+        if stop_event.wait(SETTINGS[site_key].get("check_interval", 16)):
+            break
+
+
+def start_monitoring_for_account(site_key, account):
+    
+    if site_key == "Number_Panel":
+        sms_loop_for_number_panel_account(site_key, account)
+    elif site_key == "iVASMS":
+        sms_loop_for_ivasms_account(site_key, account)
+    elif site_key == "IMS":
+        sms_loop_for_ims_account(site_key, account)
+    elif site_key == "Roxy SMS":
+        sms_loop_for_roxy_account(site_key, account)
+    elif site_key == "TimeSMS":
+        sms_loop_for_timesms_account(site_key, account)
+    else:
+        sms_loop_requests_based(site_key, account)
+
+def sms_loop_for_timesms_account(site_key, account):
+    site_name = SETTINGS[site_key]["name"]
+    username = account.get("username")
+    password = account.get("password")
+    account_id = account.get("id")
+    stop_event = account_stop_events.get(f"{site_key}_{account_id}", Event())
+    
+    sess = requests.Session()
+    sess.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    is_logged_in = False
+    
+    last_message_file = f"last_message_{site_key}_{account_id}.txt"
+    last_seen_key_local = ""
+    
+    def load_last_seen():
+        nonlocal last_seen_key_local
+        if os.path.exists(last_message_file):
+            try:
+                with open(last_message_file, "r", encoding="utf-8") as f:
+                    last_seen_key_local = f.read().strip()
+            except: pass
+    def save_last_seen():
+        try:
+            with open(last_message_file, "w", encoding="utf-8") as f:
+                f.write(last_seen_key_local)
+        except: pass
+
+    print_monitoring_box(site_name, username, "🚀", "بدء المراقبة...")
+    load_last_seen()
+    
+    login_url = SETTINGS[site_key]["login_page_url"]
+    submit_url = SETTINGS[site_key]["login_post_url"]
+    ajax_url = SETTINGS[site_key]["base_url"] + "/agent/res/data_smscdr.php"
+    
+    while not stop_event.is_set():
+        try:
+            if not is_logged_in:
+                resp = sess.get(login_url, timeout=15)
+                captcha = solve_captcha_timesms(resp.text)
+                if captcha:
+                    data = {'username': username, 'password': password, 'capt': captcha}
+                    login_resp = sess.post(submit_url, data=data, headers={'Referer': login_url}, timeout=15, allow_redirects=True)
+                    if 'login' not in str(login_resp.url).lower():
+                        is_logged_in = True
+                        print_monitoring_box(site_name, username, "✅", "تم تسجيل الدخول بنجاح")
+                    else:
+                        print_monitoring_box(site_name, username, "❌", "فشل تسجيل الدخول")
+                        time.sleep(30); continue
+                else:
+                    print_monitoring_box(site_name, username, "❌", "فشل حل الكابتشا")
+                    time.sleep(30); continue
+
+            today = datetime.now()
+            fdate1 = today.strftime('%Y-%m-%d') + " 00:00:00"
+            fdate2 = today.strftime('%Y-%m-%d') + " 23:59:59"
+            params = {'fdate1': fdate1, 'fdate2': fdate2, 'fg': '0', 'sEcho': '1', 'iDisplayStart': '0', 'iDisplayLength': '500', 'iSortCol_0': '0', 'sSortDir_0': 'desc'}
+            
+            r = sess.get(ajax_url, params=params, headers={'Referer': SETTINGS[site_key]["base_url"] + "/agent/SMSCDRReports", 'X-Requested-With': 'XMLHttpRequest'}, timeout=30)
+            if r.status_code != 200 or 'login' in r.url.lower():
+                is_logged_in = False; continue
+
+            try:
+                data = r.json()
+            except Exception as e:
+                print(f"[{site_name}] JSON Decode Error: {e}")
+                is_logged_in = False; continue
+                
+            rows = data.get('aaData', [])
+            
+            if rows:
+                new_messages = []
+                # Ensure rows are sorted by date descending (newest first)
+                try:
+                    # TimeSMS date format is YYYY-MM-DD HH:MM:SS
+                    rows.sort(key=lambda x: str(x[0]).strip() if len(x) > 0 else "", reverse=True)
+                except:
+                    pass
+                
+                for row in rows:
+                    if len(row) >= 6:
+                        msg_date, msg_num, msg_cli, msg_text = str(row[0]).strip(), str(row[2]).strip(), str(row[3]).strip(), str(row[5]).strip()
+                        
+                        # Skip if it's not a real date (e.g. headers or junk data)
+                        if not re.match(r'\d{4}-\d{2}-\d{2}', msg_date):
+                            continue
+
+                        # Use same logic as Roxy SMS for TimeSMS to ensure we don't get empty/wrong text
+                        if msg_text == "$" or len(msg_text) < 2:
+                            for idx in [4, 6, 3]: 
+                                if len(row) > idx:
+                                    potential_msg = str(row[idx]).strip()
+                                    if potential_msg and potential_msg != "$":
+                                        msg_text = potential_msg
+                                        break
+                        
+                        msg_key = f"{msg_date}_{msg_num}_{msg_text[:20]}" # More unique key
+                        if msg_key == last_seen_key_local: break
+                        new_messages.append({'date': msg_date, 'number': msg_num, 'cli': msg_cli, 'sms': msg_text, 'key': msg_key})
+                
+                if new_messages:
+                    # Update last_seen_key_local with the most recent message (first in rows after sorting descending)
+                    is_initial = not os.path.exists(last_message_file) or os.path.getsize(last_message_file) == 0
+                    
+                    last_seen_key_local = new_messages[0]['key']
+                    save_last_seen()
+                    
+                    if is_initial:
+                        print_monitoring_box(site_name, username, "🔔", "تم بدء المراقبة: جلب أحدث كود فقط")
+                        messages_to_process = [new_messages[0]]
+                    else:
+                        print_monitoring_box(site_name, username, "🔔", f"لقيت كود: {len(new_messages)} رسائل جديدة")
+                        # Process messages in reverse order (oldest to newest among new ones)
+                        messages_to_process = reversed(new_messages)
+                    
+                    for msg in messages_to_process:
+                        otp_val, clean_sms = extract_from_message(msg['sms'])
+                        service_name = f"[{detect_service(clean_sms)}]"
+                        formatted = format_otp_message_v2(msg['number'], clean_sms, service_name, otp_val)
+                        send_otp_to_user(clean_number(msg['number']), formatted, msg['number'], None, otp_val)
+                        
+                        # Save details for statistics or logs if needed
+                        sent_file = f"sent_messages_{site_key}_{account_id}.json"
+                        try:
+                            sent_msgs = []
+                            if os.path.exists(sent_file):
+                                with open(sent_file, 'r', encoding='utf-8') as f:
+                                    sent_msgs = json.load(f)
+                            
+                            sent_msgs.append({
+                                'date': msg['date'],
+                                'number': msg['number'],
+                                'text': msg['sms'],
+                                'otp': otp_val,
+                                'timestamp': time.time()
+                            })
+                            
+                            # Keep only last 100 messages
+                            if len(sent_msgs) > 100:
+                                sent_msgs = sent_msgs[-100:]
+                                
+                            with open(sent_file, 'w', encoding='utf-8') as f:
+                                json.dump(sent_msgs, f, indent=2, ensure_ascii=False)
+                        except Exception as e:
+                            print(f"[{site_name}] Error saving sent messages: {e}")
+                else:
+                    print_monitoring_box(site_name, username, "🟢", "لا توجد اكواد")
+            else:
+                print_monitoring_box(site_name, username, "🟢", "لا توجد اكواد")
+
+        except Exception as e:
+            print(f"[{site_name}] Error: {e}")
+            is_logged_in = False
+        time.sleep(SETTINGS[site_key].get("check_interval", 5))
+
+def sms_loop_for_roxy_account(site_key, account):
+    site_name = SETTINGS[site_key]["name"]
+    username = account.get("username")
+    password = account.get("password")
+    account_id = account.get("id")
+    stop_event = account_stop_events.get(f"{site_key}_{account_id}", Event())
+    
+    scraper = cloudscraper.create_scraper()
+    is_logged_in = False
+    
+    last_message_file = f"last_message_{site_key}_{account_id}.txt"
+    last_seen_key_local = ""
+    
+    def load_last_seen():
+        nonlocal last_seen_key_local
+        if os.path.exists(last_message_file):
+            try:
+                with open(last_message_file, "r", encoding="utf-8") as f:
+                    last_seen_key_local = f.read().strip()
+            except: pass
+    def save_last_seen():
+        try:
+            with open(last_message_file, "w", encoding="utf-8") as f:
+                f.write(last_seen_key_local)
+        except: pass
+
+    print_monitoring_box(site_name, username, "🚀", "بدء المراقبة...")
+    load_last_seen()
+    
+    login_url = "http://www.roxysms.net/signin"
+    ajax_url = "http://www.roxysms.net/agent/res/data_smscdr.php"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "http://www.roxysms.net/agent/SMSCDRReports"
+    }
+    
+    while not stop_event.is_set():
+        try:
+            if not is_logged_in:
+                payload = {"username": username, "password": password}
+                try:
+                    login_resp = scraper.post(login_url, data=payload, headers=headers, timeout=30)
+                    if login_resp.status_code == 200 and ("success" in login_resp.text.lower() or "logout" in login_resp.text.lower()):
+                        is_logged_in = True
+                        print_monitoring_box(site_name, username, "✅", "تم تسجيل الدخول بنجاح")
+                    else:
+                        print_monitoring_box(site_name, username, "❌", "فشل تسجيل الدخول، إعادة المحاولة...")
+                        time.sleep(30)
+                        continue
+                except Exception as e:
+                    print(f"[{site_name}] Login Error: {e}")
+                    time.sleep(30)
+                    continue
+
+            today = datetime.now().strftime('%Y-%m-%d')
+            params = {
+                'fdate1': f'{today} 00:00:00',
+                'fdate2': f'{today} 23:59:59',
+                'fg': '0'
+            }
+            
+            try:
+                r = scraper.get(ajax_url, params=params, headers=headers, timeout=30)
+                
+                if r.status_code != 200 or 'login' in r.url.lower():
+                    is_logged_in = False
+                    continue
+
+                data = r.json()
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                print(f"[{site_name}] Connection issue, retrying: {e}")
+                is_logged_in = False
+                time.sleep(10)
+                continue
+            except Exception as e:
+                print(f"[{site_name}] Request Error: {e}")
+                is_logged_in = False
+                time.sleep(10)
+                continue
+            rows = data.get('aaData', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            
+            if rows:
+                new_messages = []
+                for row in rows:
+                    if isinstance(row, list) and len(row) >= 6:
+                        d_str, num, msg_txt = str(row[0]), re.sub(r'\D', '', str(row[2])), str(row[5])
+                        
+                        if msg_txt == "$" or len(msg_txt) < 2:
+                            
+                            for idx in [4, 6, 3]: 
+                                if len(row) > idx:
+                                    potential_msg = str(row[idx]).strip()
+                                    if potential_msg and potential_msg != "$":
+                                        msg_txt = potential_msg
+                                        break
+                        
+                        key = f"{d_str}|{num}"
+                        if key == last_seen_key_local: break
+                        new_messages.append({'date': d_str, 'number': num, 'sms': msg_txt})
+                
+                if new_messages:
+                    last_seen_key_local = f"{new_messages[0]['date']}|{new_messages[0]['number']}"
+                    save_last_seen()
+                    
+                    
+                    for msg in reversed(new_messages):
+                        otp_val, clean_sms = extract_from_message(msg['sms'])
+                        service_name = f"[{detect_service(clean_sms)}]"
+                        formatted = format_otp_message_v2(msg['number'], clean_sms, service_name, otp_val)
+                        send_otp_to_user(clean_number(msg['number']), formatted, msg['number'], None, otp_val)
+                else:
+                    print_monitoring_box(site_name, username, "📭", "لا توجد أكواد جديدة")
+            else:
+                print_monitoring_box(site_name, username, "📭", "لا توجد أكواد")
+                
+        except Exception as e:
+            print(f"[{site_name}] Error: {e}")
+            is_logged_in = False
+            time.sleep(10)
+
+        if stop_event.wait(SETTINGS[site_key].get("check_interval", 5)):
+            break
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.set_event_loop(asyncio.new_event_loop())
-    main()
+    load_data()
+    
+    monitoring_threads = []
+    print("🚀 بدء تشغيل نظام المراقبة متعدد الحسابات...")
+    
+    for site_key in ["GROUP", "Fly sms", "Number_Panel", "Bolt", "iVASMS", "MSI", "proton SMS", "IMS", "Roxy SMS", "TimeSMS"]:
+        if SETTINGS[site_key]["enabled"]:
+            accounts = get_site_accounts(site_key)
+            site_name = SETTINGS[site_key]["name"]
+            
+            if accounts:
+                print(f"\n📋 {site_name}: وجدت {len(accounts)} حساب")
+                for account in accounts:
+                    username = account.get('username', 'N/A')
+                    thread = Thread(target=start_monitoring_for_account, args=(site_key, account), daemon=True)
+                    monitoring_threads.append(thread)
+                    thread.start()
+                    print(f"  ✅ بدء مراقبة: {username}")
+            else:
+                print(f"  ⚠️ {site_name}: لا توجد حسابات")
+    
+    print(f"\n🎯 إجمالي Threads النشطة: {len(monitoring_threads)}")
+    
+    import requests
+    try:
+        bot_token = BOT_TOKEN
+        delete_webhook_url = f"https://api.telegram.org/bot{bot_token}/deleteWebhook?drop_pending_updates=true"
+        response = requests.get(delete_webhook_url)
+        print(f"🔄 تم حذف webhook وتنظيف التحديثات المعلقة: {response.json()}")
+    except Exception as e:
+        print(f"⚠️ خطأ في حذف webhook: {e}")
+    
+    print("\n✨ البوت جاهز للعمل!\n")
+    
+    try:
+        from telebot.types import BotCommand
+        commands = [
+            BotCommand("start", "Start the bot"),
+            BotCommand("getnumber", "Get a number"),
+            BotCommand("account", "My account"),
+            BotCommand("help", "Help guide"),
+            BotCommand("withdraw", "Withdraw balance"),
+            BotCommand("hom", "Main menu"),
+            BotCommand("language", "Change language"),
+            BotCommand("bonus", "Bonus system")
+        ]
+        bot.set_my_commands(commands)
+        print("✅ تم تسجيل الأوامر بنجاح!")
+    except Exception as e:
+        print(f"⚠️ خطأ في تسجيل الأوامر: {e}")
+    
+    max_retries = 5
+    retry_delay = 5
+    
+    for attempt in range(max_retries):
+        try:
+            print(f"🚀 محاولة بدء polling (محاولة {attempt + 1}/{max_retries})...")
+            bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+            break
+        except Exception as e:
+            if "409" in str(e) or "Conflict" in str(e):
+                if attempt < max_retries - 1:
+                    print(f"⚠️ تعارض polling (409) - إعادة المحاولة بعد {retry_delay} ثواني...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    print(f"❌ فشل بدء البوت بعد {max_retries} محاولات!")
+                    raise
+            else:
+                raise
