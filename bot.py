@@ -81,7 +81,7 @@ def make_timesms_session(base_headers=None):
     return s
 # ─────────────────────────────────────────────────────────────────────────────
 
-BOT_TOKEN = "8743808077:AAHyZkSyiwODeMIAkM7hqMBOwjPi3dLD55c"
+BOT_TOKEN = "8743808077:AAG85ZeFLSPqH7aZIBHZSttIvbl1Ij79kxY"
 MAIN_ADMIN_ID = 8298133943
 
 def create_backup(source_files, backup_dir="backups"):
