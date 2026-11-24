@@ -3843,7 +3843,7 @@ async def post_init(application):
 
 
 def main():
-    print(f"🤖 {MIAH_WATERMARK}")
+    print("🤖 SMSBOT STARTING...")
     app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(16).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
