@@ -937,15 +937,10 @@ def detect_service(full_sms):
 # ==================== KEYBOARDS SECTION ====================
 # GET 2FA and SEARCH OTP button positions were swapped
 
-from telegram import KeyboardButton, ReplyKeyboardMarkup
-
 def main_keyboard(user_id):
     keyboard = [
         [
-            KeyboardButton(
-                text=tr(user_id, "btn_get_number"),
-                style="success"
-            )
+            KeyboardButton(text=tr(user_id, "btn_get_number"))
         ]
     ]
 
@@ -957,31 +952,28 @@ def main_keyboard(user_id):
     optional_buttons = []
 
     if is_button_enabled("btn_search_otp"):
-        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_search_otp"), style="primary"))
+        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_search_otp")))
     if is_button_enabled("btn_2fa"):
-        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_2fa"), style="danger"))
+        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_2fa")))
 
-    optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_balance"), style="success"))
-    optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_refer"), style="primary"))
+    optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_balance")))
+    optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_refer")))
 
     if is_button_enabled("btn_profile"):
-        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_profile"), style="primary"))
+        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_profile")))
     if is_button_enabled("btn_leaderboard"):
-        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_leaderboard"), style="danger"))
+        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_leaderboard")))
     if is_button_enabled("btn_support"):
-        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_support"), style="primary"))
+        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_support")))
     if is_button_enabled("btn_traffic"):
-        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_traffic"), style="success"))
+        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_traffic")))
 
     for i in range(0, len(optional_buttons), 2):
         keyboard.append(optional_buttons[i:i + 2])
 
     if is_admin(user_id):
         keyboard.append([
-            KeyboardButton(
-                text=tr(user_id, "btn_admin_panel"),
-                style="danger"
-            )
+            KeyboardButton(text=tr(user_id, "btn_admin_panel"))
         ])
 
     return ReplyKeyboardMarkup(
@@ -990,47 +982,46 @@ def main_keyboard(user_id):
     )
 
 def cancel_keyboard():
-    keyboard = [[KeyboardButton("❌ CANCEL", style="danger")]]
+    keyboard = [[KeyboardButton("❌ CANCEL")]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def admin_main_keyboard():
     keyboard = [
-        [KeyboardButton("👥 USER MANAGEMENT", style="success"), KeyboardButton("💳 PAYMENT SETUP", style="success")],
-        [KeyboardButton("⚙️ SYSTEM CONFIGURATION", style="success")],
-        [KeyboardButton("🔙 BACK TO MAIN", style="danger")]
+        [KeyboardButton("👥 USER MANAGEMENT"), KeyboardButton("💳 PAYMENT SETUP")],
+        [KeyboardButton("⚙️ SYSTEM CONFIGURATION")],
+        [KeyboardButton("🔙 BACK TO MAIN")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def user_management_keyboard():
     keyboard = [
-        [KeyboardButton("📢 BROADCAST", style="success"), KeyboardButton("🆔 ALL USER ID", style="primary")],
-        [KeyboardButton("📜 BAN USER LIST", style="primary"), KeyboardButton("💰 ALL USER BALANCE", style="primary")],
-        [KeyboardButton("🔙 BACK TO ADMIN", style="danger")]
+        [KeyboardButton("📢 BROADCAST"), KeyboardButton("🆔 ALL USER ID")],
+        [KeyboardButton("📜 BAN USER LIST"), KeyboardButton("💰 ALL USER BALANCE")],
+        [KeyboardButton("🔙 BACK TO ADMIN")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def system_config_keyboard():
     keyboard = [
-        [KeyboardButton("📈 TODAY ALL STATUS", style="success"), KeyboardButton("👤 USER STATUS CHECK", style="success")],
-        [KeyboardButton("⛔ BAN USER", style="danger"), KeyboardButton("🔓 UNBAN USER", style="primary")],
-        [KeyboardButton("📜 BAN USER LIST", style="primary"), KeyboardButton("💱 OTP RATE", style="primary")],
-        [KeyboardButton("➖ REMOVE BALANCE", style="danger"), KeyboardButton("➕ ADD BALANCE", style="success")],
-        [KeyboardButton("📡 MANAGE SERVICES", style="primary"), KeyboardButton("🔘 MANAGE BUTTONS", style="primary")],
-        [KeyboardButton("🔢 NUMBER MANAGE", style="primary"), KeyboardButton("🎁 REFER CONTROL", style="primary")],
-        [KeyboardButton("🔙 BACK TO ADMIN", style="danger")]
+        [KeyboardButton("📈 TODAY ALL STATUS"), KeyboardButton("👤 USER STATUS CHECK")],
+        [KeyboardButton("⛔ BAN USER"), KeyboardButton("🔓 UNBAN USER")],
+        [KeyboardButton("📜 BAN USER LIST"), KeyboardButton("💱 OTP RATE")],
+        [KeyboardButton("➖ REMOVE BALANCE"), KeyboardButton("➕ ADD BALANCE")],
+        [KeyboardButton("📡 MANAGE SERVICES"), KeyboardButton("🔘 MANAGE BUTTONS")],
+        [KeyboardButton("🔢 NUMBER MANAGE"), KeyboardButton("🎁 REFER CONTROL")],
+        [KeyboardButton("🔙 BACK TO ADMIN")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def withdraw_method_keyboard():
     flags = get_payment_flags()
-    styles = {"pm_bkash": "success", "pm_nagad": "success", "pm_rocket": "primary", "pm_binance": "primary"}
     buttons = [
-        KeyboardButton(PAYMENT_METHOD_LABELS[key], style=styles[key])
+        KeyboardButton(PAYMENT_METHOD_LABELS[key])
         for key in ("pm_bkash", "pm_nagad", "pm_rocket", "pm_binance")
         if flags.get(key, True)
     ]
     rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    rows.append([KeyboardButton("❌ CANCEL", style="danger")])
+    rows.append([KeyboardButton("❌ CANCEL")])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 # ==================== HELPER FUNCTIONS SECTION ====================
