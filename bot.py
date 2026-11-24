@@ -431,7 +431,7 @@ request_queue = asyncio.Queue()
 MAX_WORKERS = 5000
 
 client_async = httpx.AsyncClient(
-    timeout=httpx.Timeout(connect=3.0, read=8.0, write=5.0, pool=3.0),
+    timeout=httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0),
     headers={"X-API-Key": API_KEY},
     limits=httpx.Limits(max_connections=20, max_keepalive_connections=5)
 )
@@ -3835,6 +3835,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== MAIN & POST INIT SECTION ====================
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    print(f"⚠️ Telegram error: {context.error}")
+
 async def post_init(application):
     for _ in range(5):
         asyncio.create_task(worker())
@@ -3850,7 +3853,23 @@ def main():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-    app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(16).post_init(post_init).build()
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .concurrent_updates(16)
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .pool_timeout(30.0)
+        .get_updates_connect_timeout(30.0)
+        .get_updates_read_timeout(30.0)
+        .get_updates_write_timeout(30.0)
+        .get_updates_pool_timeout(30.0)
+        .post_init(post_init)
+        .build()
+    )
+
+    app.add_error_handler(error_handler)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("get1number", get1number_command))
@@ -3864,7 +3883,12 @@ def main():
     app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), handle_message))
 
     print("🚀 BOT RUNNING...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        poll_interval=2.0,
+        timeout=30,
+    )
 
 if __name__ == "__main__":
     main()
