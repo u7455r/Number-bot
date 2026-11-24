@@ -2825,7 +2825,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     uid = update.effective_user.id
     await remember_user_name(update.effective_user)
-    text = update.message.text.strip()
+    text = (update.message.text or "").strip()
 
     # FIX: escape hatch for "BACK TO ADMIN" / "BACK TO MAIN" — must be checked
     # BEFORE any admin mode flags below, otherwise the button text itself gets
@@ -3844,6 +3844,12 @@ async def post_init(application):
 
 def main():
     print("🤖 SMSBOT STARTING...")
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(16).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -3855,7 +3861,7 @@ def main():
     app.add_handler(CommandHandler("leaderboard", leaderboard_command_slash))
 
     app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), handle_message))
 
     print("🚀 BOT RUNNING...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
