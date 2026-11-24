@@ -5,6 +5,8 @@ import json
 import html
 import os
 import sqlite3
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pyotp
 import random
@@ -19,7 +21,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 
 # ==================== CONFIG SECTION ====================
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8743808077:AAHOfLNW0AXIdzgDs0z5OepAydEysPbqGd8")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8743808077:AAFKv93Fb0kiBV_0dM71bfn_YTyl5krTEhA")
 API_KEY = os.environ.get("API_KEY", "MIAHSMS_93DD67448A88DFE96304F382")
 BASE_URL = "https://miahsms.com/bot"           # Your panel domain (without trailing slash)
 
@@ -3833,7 +3835,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-# ==================== MAIN & POST INIT SECTION ====================
+# ==================== RENDER HEALTH SERVER & MAIN SECTION ====================
+
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+    def log_message(self, format, *args):
+        pass
+
+def _start_keepalive_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = ThreadingHTTPServer(("0.0.0.0", port), _HealthHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"🌐 Port {port} bound for Render")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     print(f"⚠️ Telegram error: {context.error}")
@@ -3847,6 +3866,7 @@ async def post_init(application):
 
 def main():
     print("🤖 SMSBOT STARTING...")
+    _start_keepalive_server()
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
