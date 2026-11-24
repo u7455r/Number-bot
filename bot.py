@@ -1,2014 +1,3864 @@
-import subprocess
-import sys
-import time
+import asyncio
+import io
 import re
 import json
-import os
 import html
+import os
+import sqlite3
+import httpx
+import pyotp
 import random
-import uuid
-import pickle
-import ssl
-import hashlib
-import shutil
-from datetime import datetime, date, timedelta
-from threading import Thread, Event
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import quote_plus
-
-import cloudscraper
-import requests
-from requests.adapters import HTTPAdapter
-import urllib3
-import phonenumbers
-from phonenumbers import geocoder
-from phonenumbers.phonenumberutil import region_code_for_number, COUNTRY_CODE_TO_REGION_CODE
-import pycountry
-from bs4 import BeautifulSoup
-from flask import Flask
-import telebot
-from telebot.types import (
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardRemove,
-    BotCommand,
-)
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# ── Render Keep-Alive Web Server (Prevents 30s / Port Timeout) ───────────────
-keep_alive_app = Flask(__name__)
-
-@keep_alive_app.route("/")
-def home():
-    return "Bot is alive and running on Render!", 200
-
-@keep_alive_app.route("/health")
-def health():
-    return "OK", 200
-
-def run_keep_alive():
-    port = int(os.environ.get("PORT", 10000))
-    keep_alive_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
-
-Thread(target=run_keep_alive, daemon=True).start()
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ── Legacy SSL Adapter for TimeSMS ───────────────────────────────────────────
-class LegacySSLAdapter(HTTPAdapter):
-    def init_poolmanager(self, *args, **kwargs):
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        try:
-            ctx.set_ciphers("DEFAULT:@SECLEVEL=0")
-        except Exception:
-            pass
-        kwargs["ssl_context"] = ctx
-        return super().init_poolmanager(*args, **kwargs)
-
-def make_timesms_session(base_headers=None):
-    s = requests.Session()
-    if base_headers:
-        s.headers.update(base_headers)
-    s.verify = False
-    adapter = LegacySSLAdapter()
-    s.mount("https://", adapter)
-    s.mount("http://", adapter)
-    return s
-# ─────────────────────────────────────────────────────────────────────────────
-
-BOT_TOKEN = "8743808077:AAG85ZeFLSPqH7aZIBHZSttIvbl1Ij79kxY"
-MAIN_ADMIN_ID = 8298133943
-
-def create_backup(source_files, backup_dir="backups"):
-    if not os.path.exists(backup_dir):
-        os.makedirs(backup_dir, exist_ok=True)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    current_backup_dir = os.path.join(backup_dir, f"backup_{timestamp}")
-    os.makedirs(current_backup_dir, exist_ok=True)
-    
-    for file in source_files:
-        if file and os.path.exists(file):
-            try:
-                dest_path = os.path.join(current_backup_dir, os.path.basename(file))
-                if os.path.isdir(file):
-                    if os.path.exists(dest_path):
-                        shutil.rmtree(dest_path)
-                    shutil.copytree(file, dest_path)
-                else:
-                    shutil.copy2(file, current_backup_dir)
-            except Exception as e:
-                print(f"Error backing up {file}: {e}", flush=True)
-    
-    zip_name = f"{current_backup_dir}.zip"
-    try:
-        shutil.make_archive(current_backup_dir, 'zip', current_backup_dir)
-        shutil.rmtree(current_backup_dir)
-        return zip_name
-    except Exception as e:
-        print(f"Error zipping backup: {e}", flush=True)
-        return current_backup_dir
-
-class BackupManager:
-    def create_backup(self):
-        files_to_backup = []
-        for var in ['SETTINGS_FILE', 'SESSIONS_FILE', 'USERS_FILE', 'ADMINS_FILE', 'GROUPS_FILE', 'COUNTRIES_FILE', 'CHANNELS_FILE']:
-            val = globals().get(var)
-            if val:
-                files_to_backup.append(val)
-        if os.path.exists("database"):
-            files_to_backup.append("database")
-        return create_backup(files_to_backup)
-    
-    def restore_backup(self, zip_path):
-        return False
-
-backup_manager = BackupManager()
-
-def list_backups(backup_dir="backups"):
-    if not os.path.exists(backup_dir):
-        return []
-    return sorted([d for d in os.listdir(backup_dir) if os.path.isdir(os.path.join(backup_dir, d))], reverse=True)
-
-SETTINGS_FILE = "ii287.json"
-SESSIONS_FILE = "limogpt.json"
-
-def get_country_flags(country_name):
-    country_name_lower = country_name.lower()
-    flags = {
-        "egypt": "<tg-emoji emoji-id='5976310790381115423'>🇪🇬</tg-emoji>", "libya": "🇱🇾", "syria": "🇸🇾", "iraq": "<tg-emoji emoji-id='5976458232313420307'>🇮🇶</tg-emoji>", "saudi": "<tg-emoji emoji-id='5976726495970729818'>🇸🇦</tg-emoji>",
-        "yemen": "<tg-emoji emoji-id='5976685311529327157'>🇾🇪</tg-emoji>", "jordan": "🇯🇴", "uae": "🇦🇪", "kuwait": "🇰🇼", "qatar": "🇶🇦",
-        "oman": "🇴🇲", "bahrain": "🇧🇭", "lebanon": "🇱🇧", "palestine": "🇵🇸", "algeria": "🇩🇿",
-        "morocco": "🇲🇦", "tunisia": "🇹🇳", "sudan": "🇸🇩", "somalia": "🇸🇴", "djibouti": "🇩🇯",
-        "mauritania": "🇲🇷", "liber": "🇱🇾", "مصر": "<tg-emoji emoji-id='5976310790381115423'>🇪🇬</tg-emoji>", "ليبيا": "🇱🇾", "سوريا": "🇸🇾",
-        "العراق": "<tg-emoji emoji-id='5976458232313420307'>🇮🇶</tg-emoji>", "السعودية": "<tg-emoji emoji-id='5976726495970729818'>🇸🇦</tg-emoji>", "اليمن": "<tg-emoji emoji-id='5976685311529327157'>🇾🇪</tg-emoji>", "الأردن": "🇯🇴", "الإمارات": "🇦🇪",
-        "الكويت": "🇰🇼", "قطر": "🇶🇦", "عمان": "🇴🇲", "البحرين": "🇧🇭", "لبنان": "🇱🇧",
-        "فلسطين": "🇵🇸", "الجزائر": "🇩🇿", "المغرب": "🇲🇦", "تونس": "🇹🇳", "السودان": "🇸🇩",
-        "الصومال": "🇸🇴", "جيبوتي": "🇩🇯", "موريتانيا": "🇲🇷"
-    }
-    for name, flag in flags.items():
-        if name in country_name_lower:
-            return flag
-    return "🌐"
-
-def load_env():
-    if os.path.exists('.env'):
-        with open('.env', 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, value = line.split('=', 1)
-                    os.environ[key.strip()] = value.strip()
-
-load_env()
-
-DEFAULT_SETTINGS = {
-    "GROUP": {
-        "name": "GROUP",
-        "accounts": [{"id": str(uuid.uuid4()), "username": "Yousseffh123", "password": "Yousseffh123"}],
-        "base_url": "http://139.99.63.204",
-        "login_page_url": "http://139.99.63.204/ints/login",
-        "login_post_url": "http://139.99.63.204/ints/signin",
-        "ajax_path": "/ints/agent/res/data_smscdr.php",
-        "check_interval": 5,
-        "timeout": 30,
-        "enabled": True
-    },
-    "Fly sms": {
-        "name": "Fly sms",
-        "accounts": [{"id": str(uuid.uuid4()), "username": "ud08", "password": "aud$$"}],
-        "base_url": "http://193.70.33.154",
-        "login_page_url": "http://193.70.33.154/ints/login",
-        "login_post_url": "http://193.70.33.154/ints/signin",
-        "ajax_path": "/ints/agent/res/data_smscdr.php",
-        "check_interval": 1,
-        "timeout": 60,
-        "enabled": True
-    },
-    "Number_Panel": {
-        "name": "Number Panel",
-        "accounts": [{"id": "SFBTR0ZBUzRWkE9Xd2GRVIeViIVBk3BpXnCTiElodkFhVWFYdYOLZA==", "api_token": "SFBTR0ZBUzRWkE9Xd2GRVIeViIVBk3BpXnCTiElodkFhVWFYdYOLZA=="}],
-        "base_url": "http://147.135.212.197/crapi/st/viewstats",
-        "check_interval": 5,
-        "timeout": 30,
-        "enabled": True
-    },
-    "Bolt": {
-        "name": "Bolt",
-        "accounts": [{"id": str(uuid.uuid4()), "username": "abuar113", "password": "abuun_Z113"}],
-        "base_url": "http://93.190.143.35/ints",
-        "login_page_url": "http://93.190.143.35/ints/Login",
-        "login_post_url": "http://93.190.143.35/ints/signin",
-        "ajax_path": "/agent/res/data_smscdr.php",
-        "check_interval": 5,
-        "timeout": 30,
-        "enabled": True
-    },
-    "iVASMS": {
-        "name": "iVAS SMS",
-        "accounts": [{"id": str(uuid.uuid4()), "username": "micahc7@gmail.com", "password": "12011", "api_key": "sk_4b5ff02b42635e4c4891bd5d2f8fcb7aff2f7af6d5daecf8498ba91092dfcbb6"}],
-        "api_url": "https://maroon-wombat-183778.hostingersite.com/apiivasms/api.php",
-        "check_interval": 5,
-        "timeout": 15,
-        "enabled": True
-    },
-    "MSI": {
-        "name": "MSI",
-        "accounts": [{"id": str(uuid.uuid4()), "username": "Yo123X", "password": "ef64"}],
-        "base_url": "http://145.239.130.45/ints",
-        "login_page_url": "http://145.239.130.45/ints/login",
-        "login_post_url": "http://145.239.130.45/ints/signin",
-        "ajax_path": "/agent/res/data_smscdr.php",
-        "check_interval": 5,
-        "timeout": 30,
-        "enabled": True
-    },
-    "proton SMS": {
-        "name": "proton SMS",
-        "accounts": [{"id": str(uuid.uuid4()), "username": "LLL", "password": "ELL"}],
-        "base_url": "http://109.236.84.81/ints",
-        "login_page_url": "http://109.236.84.81/ints/login",
-        "login_post_url": "http://109.236.84.81/ints/signin",
-        "ajax_path": "/agent/res/data_smscdr.php",
-        "check_interval": 5,
-        "timeout": 60,
-        "enabled": True
-    },
-    "IMS": {
-        "name": "IMS",
-        "accounts": [{"id": str(uuid.uuid4()), "username": "Ahmone", "password": "98"}],
-        "base_url": "http://45.82.67.20",
-        "login_page_url": "http://45.82.67.20/ints/login",
-        "login_post_url": "http://45.82.67.20/ints/signin",
-        "ajax_path": "/ints/agent/res/data_smscdr.php",
-        "check_interval": 16,
-        "timeout": 30,
-        "enabled": True
-    },
-    "Roxy SMS": {
-        "name": "Roxy SMS",
-        "accounts": [{"id": str(uuid.uuid4()), "username": "sool", "password": "Yo123"}],
-        "base_url": "http://www.roxysms.net",
-        "login_page_url": "http://www.roxysms.net/Login",
-        "login_post_url": "http://www.roxysms.net/signin",
-        "ajax_path": "/agent/res/data_smscdr.php",
-        "check_interval": 5,
-        "timeout": 30,
-        "enabled": True,
-        "use_scraper": True
-    },
-    "TimeSMS": {
-        "name": "TimeSMS",
-        "accounts": [{"id": str(uuid.uuid4()), "username": "a", "password": "7"}],
-        "base_url": "https://timesms.org",
-        "login_page_url": "https://timesms.org/login",
-        "login_post_url": "http://timesms.org/signin",
-        "ajax_path": "/agent/res/data_smscdr.php",
-        "check_interval": 5,
-        "timeout": 30,
-        "enabled": True
-    }
-}
-
-def migrate_old_settings(settings):
-    migrated = False
-    for site_key in ["GROUP", "Fly sms", "Number_Panel", "Bolt", "iVASMS", "MSI", "proton SMS", "IMS", "Roxy SMS", "TimeSMS"]:
-        if site_key in settings:
-            if "username" in settings[site_key] and "accounts" not in settings[site_key]:
-                old_username = settings[site_key]["username"]
-                old_password = settings[site_key]["password"]
-                settings[site_key]["accounts"] = [{"id": str(uuid.uuid4()), "username": old_username, "password": old_password}]
-                del settings[site_key]["username"]
-                del settings[site_key]["password"]
-                migrated = True
-            if settings[site_key].get("check_interval", 5) == 7:
-                settings[site_key]["check_interval"] = 5
-                migrated = True
-    for k in ["iVASMS", "MSI", "proton SMS", "IMS", "Roxy SMS", "TimeSMS"]:
-        if k not in settings:
-            settings[k] = DEFAULT_SETTINGS[k].copy()
-            migrated = True
-    if "Share" in settings and "proton SMS" not in settings:
-        settings["proton SMS"] = settings["Share"].copy()
-        settings["proton SMS"]["name"] = "proton SMS"
-        del settings["Share"]
-        migrated = True
-    elif "Share" in settings:
-        del settings["Share"]
-        migrated = True
-    return settings, migrated
-
-def load_settings():
-    if os.path.exists(SETTINGS_FILE):
-        try:
-            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                settings = json.load(f)
-                settings, migrated = migrate_old_settings(settings)
-                if migrated:
-                    save_settings(settings)
-                return settings
-        except Exception:
-            pass
-    return DEFAULT_SETTINGS.copy()
-
-def save_settings(settings):
-    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(settings, f, indent=2, ensure_ascii=False)
-
-def get_site_accounts(site_key):
-    return SETTINGS.get(site_key, {}).get("accounts", [])
-
-def add_account(site_key, username, password):
-    if site_key not in SETTINGS:
-        return False
-    account = {"id": str(uuid.uuid4()), "username": username, "password": password}
-    SETTINGS[site_key].setdefault("accounts", []).append(account)
-    save_settings(SETTINGS)
-    return account
-
-def delete_account(site_key, account_id):
-    global account_stop_events
-    if site_key not in SETTINGS or "accounts" not in SETTINGS[site_key]:
-        return False
-    accounts = SETTINGS[site_key]["accounts"]
-    initial_count = len(accounts)
-    SETTINGS[site_key]["accounts"] = [acc for acc in accounts if acc["id"] != account_id]
-    if len(SETTINGS[site_key]["accounts"]) < initial_count:
-        stop_key = f"{site_key}_{account_id}"
-        if stop_key in account_stop_events:
-            account_stop_events[stop_key].set()
-            del account_stop_events[stop_key]
-        for file_path in [f"cookies_{site_key}_{account_id}.pkl", f"last_message_{site_key}_{account_id}.txt", f"sent_messages_{site_key}_{account_id}.json"]:
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except Exception:
-                    pass
-        account_sessions.pop(stop_key, None)
-        account_last_seen.pop(stop_key, None)
-        save_settings(SETTINGS)
-        return True
-    return False
-
-def get_account_by_id(site_key, account_id):
-    accounts = get_site_accounts(site_key)
-    for acc in accounts:
-        if not account_id or acc["id"] == account_id or acc["id"].startswith(account_id):
-            return acc
-    return accounts[0] if accounts else None
-
-def load_sessions():
-    if os.path.exists(SESSIONS_FILE):
-        try:
-            with open(SESSIONS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
-
-def save_sessions(sessions):
-    with open(SESSIONS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(sessions, f, indent=2, ensure_ascii=False)
-
-SETTINGS = load_settings()
-SESSIONS = load_sessions()
-
-def get_first_account(site_key):
-    accounts = get_site_accounts(site_key)
-    return accounts[0] if accounts else {"username": "", "password": ""}
-
-USERNAME = get_first_account("GROUP").get("username", "")
-PASSWORD = get_first_account("GROUP").get("password", "")
-BASE_URL = SETTINGS["GROUP"]["base_url"]
-LOGIN_PAGE_URL = SETTINGS["GROUP"]["login_page_url"]
-LOGIN_POST_URL = SETTINGS["GROUP"]["login_post_url"]
-AJAX_PATH = SETTINGS["GROUP"]["ajax_path"]
-HTTP_TIMEOUT = SETTINGS["GROUP"]["timeout"]
-CHECK_INTERVAL = SETTINGS["GROUP"]["check_interval"]
-
-USERNAME2 = get_first_account("Fly sms").get("username", "")
-PASSWORD2 = get_first_account("Fly sms").get("password", "")
-BASE_URL2 = SETTINGS["Fly sms"]["base_url"]
-LOGIN_PAGE_URL2 = SETTINGS["Fly sms"]["login_page_url"]
-LOGIN_POST_URL2 = SETTINGS["Fly sms"]["login_post_url"]
-AJAX_PATH2 = SETTINGS["Fly sms"]["ajax_path"]
-HTTP_TIMEOUT2 = SETTINGS["Fly sms"]["timeout"]
-CHECK_INTERVAL2 = SETTINGS["Fly sms"]["check_interval"]
-
-USERNAME3 = get_first_account("Number_Panel").get("username", "")
-PASSWORD3 = get_first_account("Number_Panel").get("password", "")
-BASE_URL3 = SETTINGS["Number_Panel"]["base_url"]
-LOGIN_PAGE_URL3 = SETTINGS["Number_Panel"].get("login_page_url", "")
-LOGIN_POST_URL3 = SETTINGS["Number_Panel"].get("login_post_url", "")
-AJAX_PATH3 = SETTINGS["Number_Panel"].get("ajax_path", "")
-HTTP_TIMEOUT3 = SETTINGS["Number_Panel"]["timeout"]
-CHECK_INTERVAL3 = SETTINGS["Number_Panel"]["check_interval"]
-
-USERNAME4 = get_first_account("Bolt").get("username", "")
-PASSWORD4 = get_first_account("Bolt").get("password", "")
-BASE_URL4 = SETTINGS["Bolt"]["base_url"]
-LOGIN_PAGE_URL4 = SETTINGS["Bolt"]["login_page_url"]
-LOGIN_POST_URL4 = SETTINGS["Bolt"]["login_post_url"]
-AJAX_PATH4 = SETTINGS["Bolt"]["ajax_path"]
-HTTP_TIMEOUT4 = SETTINGS["Bolt"]["timeout"]
-CHECK_INTERVAL4 = SETTINGS["Bolt"]["check_interval"]
-
-USERNAME5 = get_first_account("iVASMS").get("username", "")
-PASSWORD5 = get_first_account("iVASMS").get("password", "")
-IVASMS_API_URL = SETTINGS["iVASMS"].get("api_url", "https://maroon-wombat-183778.hostingersite.com/apiivasms/api.php")
-IVASMS_API_KEY = get_first_account("iVASMS").get("api_key", "")
-HTTP_TIMEOUT5 = SETTINGS["iVASMS"]["timeout"]
-CHECK_INTERVAL5 = SETTINGS["iVASMS"]["check_interval"]
-LOGIN_PAGE_URL5 = ""
-LOGIN_POST_URL5 = ""
-SMS_RECEIVED_URL5 = ""
-GET_SMS_URL5 = ""
-GET_SMS_NUMBER_URL5 = ""
-GET_SMS_MESSAGE_URL5 = ""
-
-USERNAME6 = get_first_account("MSI").get("username", "")
-PASSWORD6 = get_first_account("MSI").get("password", "")
-BASE_URL6 = SETTINGS["MSI"]["base_url"]
-LOGIN_PAGE_URL6 = SETTINGS["MSI"]["login_page_url"]
-LOGIN_POST_URL6 = SETTINGS["MSI"]["login_post_url"]
-AJAX_PATH6 = SETTINGS["MSI"]["ajax_path"]
-HTTP_TIMEOUT6 = SETTINGS["MSI"]["timeout"]
-CHECK_INTERVAL6 = SETTINGS["MSI"]["check_interval"]
-
-USERNAME7 = get_first_account("proton SMS").get("username", "")
-PASSWORD7 = get_first_account("proton SMS").get("password", "")
-BASE_URL7 = SETTINGS["proton SMS"]["base_url"]
-LOGIN_PAGE_URL7 = SETTINGS["proton SMS"]["login_page_url"]
-LOGIN_POST_URL7 = SETTINGS["proton SMS"]["login_post_url"]
-AJAX_PATH7 = SETTINGS["proton SMS"]["ajax_path"]
-HTTP_TIMEOUT7 = SETTINGS["proton SMS"]["timeout"]
-CHECK_INTERVAL7 = SETTINGS["proton SMS"]["check_interval"]
-
-USERNAME8 = get_first_account("IMS").get("username", "")
-PASSWORD8 = get_first_account("IMS").get("password", "")
-BASE_URL8 = SETTINGS["IMS"]["base_url"]
-LOGIN_PAGE_URL8 = SETTINGS["IMS"]["login_page_url"]
-LOGIN_POST_URL8 = SETTINGS["IMS"]["login_post_url"]
-AJAX_PATH8 = SETTINGS["IMS"]["ajax_path"]
-HTTP_TIMEOUT8 = SETTINGS["IMS"]["timeout"]
-CHECK_INTERVAL8 = SETTINGS["IMS"]["check_interval"]
-
-USERNAME9 = get_first_account("Roxy SMS").get("username", "")
-PASSWORD9 = get_first_account("Roxy SMS").get("password", "")
-BASE_URL9 = SETTINGS["Roxy SMS"]["base_url"]
-LOGIN_PAGE_URL9 = SETTINGS["Roxy SMS"]["login_page_url"]
-LOGIN_POST_URL9 = SETTINGS["Roxy SMS"]["login_post_url"]
-AJAX_PATH9 = SETTINGS["Roxy SMS"]["ajax_path"]
-HTTP_TIMEOUT9 = SETTINGS["Roxy SMS"]["timeout"]
-CHECK_INTERVAL9 = SETTINGS["Roxy SMS"]["check_interval"]
-
-USERNAME10 = get_first_account("TimeSMS").get("username", "")
-PASSWORD10 = get_first_account("TimeSMS").get("password", "")
-BASE_URL10 = SETTINGS["TimeSMS"]["base_url"]
-LOGIN_PAGE_URL10 = SETTINGS["TimeSMS"]["login_page_url"]
-LOGIN_POST_URL10 = SETTINGS["TimeSMS"]["login_post_url"]
-AJAX_PATH10 = SETTINGS["TimeSMS"]["ajax_path"]
-HTTP_TIMEOUT10 = SETTINGS["TimeSMS"]["timeout"]
-CHECK_INTERVAL10 = SETTINGS["TimeSMS"]["check_interval"]
-
-COOKIES_FILE = "cookies.pkl"
-COOKIES_FILE_SITE3 = "cookies_site3.pkl"
-COOKIES_FILE_SITE4 = "cookies_site4.pkl"
-COOKIES_FILE_SITE5 = "cookies_ivasms.json"
-COOKIES_FILE_SITE6 = "cookies_msi.pkl"
-COOKIES_FILE_SITE7 = "cookies_share.pkl"
-COOKIES_FILE_SITE8 = "cookies_ims.pkl"
-COOKIES_FILE_SITE9 = "cookies_roxy.pkl"
-COOKIES_FILE_SITE10 = "cookies_timesms.pkl"
-LAST_MESSAGE_FILE = "last_message.txt"
-LAST_MESSAGE_FILE_SITE2 = "last_message_site2.txt"
-LAST_MESSAGE_FILE_SITE3 = "last_message_site3.txt"
-LAST_MESSAGE_FILE_SITE4 = "last_message_site4.txt"
-LAST_MESSAGE_FILE_SITE5 = "last_message_ivasms.txt"
-LAST_MESSAGE_FILE_SITE6 = "last_message_msi.txt"
-LAST_MESSAGE_FILE_SITE7 = "last_message_share.txt"
-LAST_MESSAGE_FILE_SITE8 = "last_message_ims.txt"
-LAST_MESSAGE_FILE_SITE9 = "last_message_roxy.txt"
-LAST_MESSAGE_FILE_SITE10 = "last_message_timesms.txt"
-
-account_scrapers = {}
-account_sessions = {}
-account_last_seen = {}
-account_stop_events = {}
-
-IDX_DATE_SITE2 = 0
-IDX_NUMBER_SITE2 = 2
-IDX_SMS_SITE2 = 5
-IDX_DATE_SITE3 = 0
-IDX_NUMBER_SITE3 = 2
-IDX_SMS_SITE3 = 5
-
-def create_session_group():
-    sess = requests.Session()
-    sess.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
-        "Accept-Encoding": "gzip, deflate",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
-    })
-    return sess
-
-session1 = create_session_group()
-is_logged_in_site1 = False
-bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
-last_seen_key = ""
-last_seen_key_site2 = ""
-last_seen_key_site3 = ""
-last_seen_key_site4 = ""
-
-session2 = requests.Session()
-session2.headers.update({
-    "User-Agent": "Mozilla/5.0 (Linux; Android 10)",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "X-Requested-With": "XMLHttpRequest",
-    "Referer": BASE_URL2 + "/ints/agent/SMSCDRReports",
-    "Accept-Language": "ar-EG,ar;q=0.9,en-US;q=0.8"
-})
-is_logged_in_site2 = False
-
-session3 = requests.Session()
-session3.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
-})
-is_logged_in_site3 = False
-
-session4 = requests.Session()
-session4.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
-})
-is_logged_in_site4 = False
-
-session6 = requests.Session()
-session6.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "X-Requested-With": "XMLHttpRequest",
-    "Referer": BASE_URL6 + "/agent/SMSCDRReports",
-    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
-})
-is_logged_in_site6 = False
-last_seen_key_site6 = ""
-
-session7 = requests.Session()
-session7.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "X-Requested-With": "XMLHttpRequest",
-    "Referer": BASE_URL7 + "/agent/SMSCDRReports",
-    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
-})
-is_logged_in_site7 = False
-last_seen_key_site7 = ""
-
-session8 = requests.Session()
-session8.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Accept-Encoding": "gzip, deflate",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-})
-is_logged_in_site8 = False
-last_seen_key_site8 = ""
-
-session9 = requests.Session()
-session9.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Accept-Encoding": "gzip, deflate",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-})
-is_logged_in_site9 = False
-last_seen_key_site9 = ""
-
-session10 = make_timesms_session({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-})
-is_logged_in_site10 = False
-last_seen_key_site10 = ""
-
-session5 = requests.Session()
-session5.verify = False
-session5.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Connection": "keep-alive"
-})
-is_logged_in_site5 = False
-csrf_token_site5 = None
-last_seen_key_site5 = ""
-
-COUNTRIES_FILE = "countriesi.json"
-CHANNELS_FILE = "channelsi.json"
-USERS_FILE = "usersi.json"
-ADMINS_FILE = "admins.ijson"
-BANNED_FILE = "bannedi.json"
-OTP_GROUP_FILE = "otp_groupi.json"
-GROUPS_FILE = "groupsi.json"
-STATISTICS_FILE = "statisticsi.json"
-REFERRALS_FILE = "referralsi.json"
-REFERRAL_SETTINGS_FILE = "referral_settings.json"
-WITHDRAWAL_REQUESTS_FILE = "withdrawal_requests.json"
-WITHDRAWAL_METHODS_FILE = "withdrawal_methods.json"
-WELCOME_MESSAGES_FILE = "welcome_messages.json"
-NUMBERS_ADMINS_FILE = "numbers_admins.json"
-COUNTRIES = {}
-CHANNELS = []
-USERS = {}
-ADMINS = [7325261765, 8598137047]
-BANNED = []
-OTP_GROUP = -1003852565392
-GROUPS = [-1003852565392]
-REFERRALS = {}
-NUMBERS_ADMINS = []
-
-def load_numbers_admins():
-    global NUMBERS_ADMINS
-    if os.path.exists(NUMBERS_ADMINS_FILE):
-        try:
-            with open(NUMBERS_ADMINS_FILE, "r", encoding="utf-8") as f:
-                NUMBERS_ADMINS = json.load(f)
-        except Exception:
-            NUMBERS_ADMINS = []
-    return NUMBERS_ADMINS
-
-def save_numbers_admins():
-    with open(NUMBERS_ADMINS_FILE, "w", encoding="utf-8") as f:
-        json.dump(NUMBERS_ADMINS, f, indent=2, ensure_ascii=False)
-
-def is_numbers_admin(user_id):
-    return user_id in NUMBERS_ADMINS or is_admin(user_id)
-
-DEFAULT_REFERRAL_SETTINGS = {
-    "codes_required_for_referral": 10,
-    "referral_bonus": 0.05,
-    "code_bonus": 0.002,
-    "min_withdrawal": 5.0,
-    "enabled": True
-}
-
-DEFAULT_WELCOME_MESSAGES = {
-    "ar": "🌐 <b>مرحباً بك في بوت الأرقام المؤقتة!</b>\n\n📱 احصل على رقم مؤقت فوراً\n🔒 آمن وسريع\n💰 اكسب من الإحالات والأكواد\n\nاختر من القائمة:",
-    "en": "🌐 <b>Welcome to Temporary Numbers Bot!</b>\n\n📱 Get a temporary number instantly\n🔒 Secure and fast\n💰 Earn from referrals and codes\n\nChoose from the menu:"
-}
-
-DEFAULT_BUTTON_LINKS = {
-    "group_link": "https://t.me/alorhawa",
-    "channel_link": "https://t.me/alorhawa",
-    "developer_link": "https://t.me/alorhawa"
-}
-
-BUTTON_LINKS_FILE = "button_links.json"
-OTP_BUTTONS_FILE = "otp_buttons.json"
-
-DEFAULT_OTP_BUTTONS = [
-    {"name": "𝙂𝙍𝙊𝙐𝙋", "url": "https://t.me/alorhawa"},
-    {"name": "𝘽𝙊𝙏", "url": "https://t.me/alorhawabot"},
-    {"name": "𝙊𝙏𝙋", "url": "https://t.me/alorhawa"},
-    {"name": "❍𓏺 𝗨𝗻𝗖𝗹𝗘 | 𝗗𝟕 𓏺 𝗕𝗘𝗣𝗢↬", "url": "https://t.me/alorhawa"}
-]
-
-def load_otp_buttons():
-    if os.path.exists(OTP_BUTTONS_FILE):
-        try:
-            with open(OTP_BUTTONS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return DEFAULT_OTP_BUTTONS.copy()
-
-def save_otp_buttons(buttons):
-    with open(OTP_BUTTONS_FILE, "w", encoding="utf-8") as f:
-        json.dump(buttons, f, indent=2, ensure_ascii=False)
-
-OTP_BUTTONS = load_otp_buttons()
-
-def format_decimal(value):
-    if value == 0:
-        return "0"
-    formatted = f"{value:.10f}".rstrip('0').rstrip('.')
-    if '.' in formatted:
-        integer_part, decimal_part = formatted.split('.')
-        if len(decimal_part) > 5:
-            decimal_part = decimal_part[:5]
-        return f"{integer_part}.{decimal_part}"
-    return formatted
-
-def load_button_links():
-    if os.path.exists(BUTTON_LINKS_FILE):
-        try:
-            with open(BUTTON_LINKS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return DEFAULT_BUTTON_LINKS.copy()
-
-def save_button_links(links):
-    with open(BUTTON_LINKS_FILE, "w", encoding="utf-8") as f:
-        json.dump(links, f, indent=2, ensure_ascii=False)
-
-BUTTON_LINKS = load_button_links()
-STATISTICS = {
-    "total_codes": 0,
-    "codes_today": 0,
-    "codes_this_week": 0,
-    "codes_this_month": 0,
-    "last_reset_day": None,
-    "last_reset_week": None,
-    "last_reset_month": None,
-    "daily_history": {}
-}
-
-user_states = {}
-broadcast_state = {}
+import string
+from datetime import datetime, timedelta
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
+try:
+    from telegram import CopyTextButton   # one-tap copy button (needs a recent python-telegram-bot)
+except Exception:
+    CopyTextButton = None
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
+
+# ==================== CONFIG SECTION ====================
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8743808077:AAHOfLNW0AXIdzgDs0z5OepAydEysPbqGd8")
+API_KEY = os.environ.get("API_KEY", "MIAHSMS_93DD67448A88DFE96304F382")
+BASE_URL = "https://miahsms.com/bot"           # Your panel domain (without trailing slash)
+
+# ==================== EDIT HERE: ADMINS / GROUP ID / ALL TELEGRAM LINKS ====================
+ADMINS = [8298133943]                           # Admin Telegram user IDs
+OTP_GROUP_ID = -1003784095272                  # OTP group chat ID
+
+SUPPORT_LINK = "https://t.me/bdgiveaways24"         # Support link
+DEVELOPER_LINK = "http://t.me/rafimhossen"    # Developer link
+CHANNEL_LINK = "https://t.me/bdgiveaways24"           # Channel link
+OTP_GROUP_LINK = "https://t.me/hjdghjlk"     # OTP receive group link
+RANGE_GROUP_LINK = "https://t.me/bdgiveaways24"      # Range group link
+PANEL_BOT_LINK = "http://t.me/OTP19BOT_BOT"     # Bot link used on the "PANEL" button
+# ===========================================================================================
+# All data is now saved in a single SQLite database file — only the activity log stays in a separate JSON file
+DATABASE_FILE = "miahsms_database.db"      # Real SQLite database file
+USER_DATA_FILE = "users"
+PAID_SMS_FILE = "paid_sms"
+STATS_FILE = "user_stats"
+REFERRAL_DATA_FILE = "referral_data"
+BANNED_USERS_FILE = "banned_users"
+WITHDRAW_DATA_FILE = "withdraw_requests"
+DATA_RANGE_FILE = "datarange"
+ACTIVITY_LOGS_FILE = "activity_logs.json"
+SITE_SETTINGS_FILE = "site_settings"   # admin-editable settings (e.g. otp_rate), stored in the same DB
+
+# ==================== WELCOME MESSAGE CONFIGURATION ====================
+WELCOME_MESSAGE = """✨👑 *WELCOME TO SMSBOT* 👑✨
+━━━━━━━━━━━━━━━━━━━━━━
+🚀 Instant Virtual Numbers
+🔐 100% Secure & Reliable Service
+💎 Premium Quality Guaranteed
+🌍 Worldwide Coverage
+━━━━━━━━━━━━━━━━━━━━━━
+🎉 *Welcome!* Get started from the menu below 👇"""
+
+MENU_PROMPT_MESSAGE = """━━━━━━━━━━━━━━━━━━━━━━
+🔹 *Select the option you need from the buttons below* 🔹
+━━━━━━━━━━━━━━━━━━━━━━"""
+
+WELCOME_MESSAGE_BN = """✨👑 *এসএমএস-BOTএ স্বাগতম* 👑✨
+━━━━━━━━━━━━━━━━━━━━━━
+🚀 তাৎক্ষণিক ভার্চুয়াল নাম্বার
+🔐 ১০০% নিরাপদ ও নির্ভরযোগ্য সার্ভিস
+💎 প্রিমিয়াম কোয়ালিটির নিশ্চয়তা
+🌍 বিশ্বব্যাপী কভারেজ
+━━━━━━━━━━━━━━━━━━━━━━
+🎉 *স্বাগতম!* নিচের মেনু থেকে শুরু করুন 👇"""
+
+MENU_PROMPT_MESSAGE_BN = """━━━━━━━━━━━━━━━━━━━━━━
+🔹 *নিচের বাটন থেকে আপনার প্রয়োজনীয় অপশন সিলেক্ট করুন* 🔹
+━━━━━━━━━━━━━━━━━━━━━━"""
+
+# ==================== MULTI-LANGUAGE CONFIGURATION ====================
+# Default language for every user is English ("en"). A user can switch to
+# Bangla ("bn") only from inside the PROFILE screen — no other menu shows
+# the language switch. The choice is stored per-user (users[uid]["lang"])
+# and persists across sessions.
+DEFAULT_LANG = "en"
 
 TEXTS = {
-    "ar": {
-        "welcome": "🌐 <b>مرحباً بك في بوت الأرقام!</b>",
-        "banned": "🚫 أنت محظور من استخدام هذا البوت.",
-        "choose_country": "📲 𝗚𝗲𝘁 𝗡𝘂𝗺𝗯𝗲𝗿",
-        "my_account": "👤 𝗠𝘆 𝗔𝗰𝗰𝗼𝘂𝗻𝘁",
-        "back": "🔙 رجوع",
-        "change_language": "🌐 تغيير اللغة",
-        "referral_success": "🎉 <b>تم تسجيلك بنجاح عبر رابط الإحالة!</b>\n\nاستمتع باستخدام البوت!",
-        "group_hello_admin": "👋 مرحباً! أنا بوت OTP.",
-        "group_hello": "👋 مرحباً! أنا بوت OTP."
-    },
     "en": {
-        "welcome": "╔════✦  𝓑𝓞𝓣𝓟  ✦════╗\n\n❖  𝗚𝗿𝗮𝗯 𝗮 𝘁𝗲𝗺𝗽𝗼𝗿𝗮𝗿𝘆 𝗻𝘂𝗺𝗯𝗲𝗿 𝗶𝗻𝘀𝘁𝗮𝗻𝘁𝗹𝘆\n❖  𝗟𝗶𝗴𝗵𝘁𝗻𝗶𝗻𝗴-𝗳𝗮𝘀𝘁 & 𝗳𝘂𝗹𝗹𝘆 𝘀𝗲𝗰𝘂𝗿𝗲\n❖  𝗪𝗼𝗿𝗸𝘀 𝗳𝗼𝗿 𝗮𝗹𝗹 𝗰𝗼𝘂𝗻𝘁𝗿𝗶𝗲𝘀\n\n•  𝗦𝗲𝗹𝗲𝗰𝘁 𝘆𝗼𝘂𝗿 𝗰𝗼𝘂𝗻𝘁𝗿𝘆\n•  𝗚𝗲𝘁 𝘆𝗼𝘂𝗿 𝗻𝘂𝗺𝗯𝗲𝗿 𝗶𝗺𝗺𝗲𝗱𝗶𝗮𝘁𝗲𝗹𝘆\n\n╚════✦  𝓑𝓞𝓣𝓟  ✦════╝",
-        "banned": "🚫 You are banned from using this bot.",
-        "choose_country": "📲 𝗚𝗲𝘁 𝗡𝘂𝗺𝗯𝗲𝗿",
-        "my_account": "👤 𝗠𝘆 𝗔𝗰𝗰𝗼𝘂𝗻𝘁",
-        "back": "🔙 Back",
-        "change_language": "🌐 Change Language",
-        "referral_success": "🎉 <b>You've registered successfully via referral link!</b>\n\nEnjoy using the bot!",
-        "group_hello_admin": "👋 Hello! I'm the OTP Bot.",
-        "group_hello": "👋 Hello! I'm the OTP Bot."
-    }
+        "welcome": WELCOME_MESSAGE,
+        "menu_prompt": MENU_PROMPT_MESSAGE,
+        "btn_get_number": "📞 GET NUMBER",
+        "btn_search_otp": "🔍 SEARCH OTP",
+        "btn_2fa": "⚡ GET 2FA",
+        "btn_balance": "💰 BALANCE",
+        "btn_refer": "REFER AND EARN",
+        "btn_profile": "👤 PROFILE",
+        "btn_leaderboard": "🏆 LEADERBOARD",
+        "btn_support": "💬 SUPPORT",
+        "btn_traffic": "🚦 TRAFFIC",
+        "btn_admin_panel": "⚙️ ADMIN PANEL ⚙️",
+        "banned": "🚫 YOU ARE BANNED 🚫",
+        "support_text": "💬 SUPPORT 🎧\n\nCLICK THE BUTTON BELOW TO CONTACT SUPPORT 📩",
+        "btn_support_inline": "💬 SUPPORT",
+        "btn_developer": "👨‍💻 DEVELOPER BY",
+        "btn_active_range": "📡 ACTIVE RANGE",
+        "search_otp_prompt": "🔍 **ENTER THE NUMBER TO SEARCH OTP:**",
+        "balance_title": "💰 <b>YOUR CURRENT BALANCE</b>",
+        "balance_total": "TOTAL",
+        "btn_withdraw": "💸 WITHDRAW",
+        "profile_title": "👤 <b>YOUR PROFILE</b>",
+        "profile_name": "NAME",
+        "profile_username": "USERNAME",
+        "profile_id": "TELEGRAM ID",
+        "profile_balance": "BALANCE",
+        "profile_today": "TODAY",
+        "profile_7d": "LAST 7 DAYS",
+        "profile_all": "ALL TIME",
+        "profile_numbers": "NUMBERS",
+        "profile_otps": "OTPS",
+        "no_username": "No username",
+        "btn_language": "🌐 LANGUAGE",
+        "lang_select_prompt": "🌐 <b>SELECT LANGUAGE</b>\n\nChoose your preferred language below:",
+        "btn_lang_en": "🇬🇧 English",
+        "btn_lang_bn": "🇧🇩 বাংলা",
+        "lang_changed": "✅ Language changed to <b>English</b>.",
+    },
+    "bn": {
+        "welcome": WELCOME_MESSAGE_BN,
+        "menu_prompt": MENU_PROMPT_MESSAGE_BN,
+        "btn_get_number": "📞 নাম্বার নিন",
+        "btn_search_otp": "🔍 ওটিপি সার্চ করুন",
+        "btn_2fa": "⚡ 2FA কোড নিন",
+        "btn_balance": "💰 ব্যালেন্স",
+        "btn_refer": "রেফার করে আয় করুন",
+        "btn_profile": "👤 প্রোফাইল",
+        "btn_leaderboard": "🏆 লিডারবোর্ড",
+        "btn_support": "💬 সাপোর্ট",
+        "btn_traffic": "🚦 ট্রাফিক",
+        "btn_admin_panel": "⚙️ অ্যাডমিন প্যানেল ⚙️",
+        "banned": "🚫 আপনাকে ব্যান করা হয়েছে 🚫",
+        "support_text": "💬 সাপোর্ট 🎧\n\nসাপোর্টের সাথে যোগাযোগ করতে নিচের বাটনে ক্লিক করুন 📩",
+        "btn_support_inline": "💬 সাপোর্ট",
+        "btn_developer": "👨‍💻 ডেভেলপার",
+        "btn_active_range": "📡 লাইভ রেঞ্জ",
+        "search_otp_prompt": "🔍 **যে নাম্বারের ওটিপি সার্চ করবেন সেটি লিখুন:**",
+        "balance_title": "💰 <b>আপনার বর্তমান ব্যালেন্স</b>",
+        "balance_total": "মোট",
+        "btn_withdraw": "💸 উইথড্র",
+        "profile_title": "👤 <b>আপনার প্রোফাইল</b>",
+        "profile_name": "নাম",
+        "profile_username": "ইউজারনেম",
+        "profile_id": "টেলিগ্রাম আইডি",
+        "profile_balance": "ব্যালেন্স",
+        "profile_today": "আজকের",
+        "profile_7d": "গত ৭ দিন",
+        "profile_all": "সর্বমোট",
+        "profile_numbers": "নাম্বার",
+        "profile_otps": "ওটিপি",
+        "no_username": "ইউজারনেম নেই",
+        "btn_language": "🌐 ভাষা",
+        "lang_select_prompt": "🌐 <b>ভাষা নির্বাচন করুন</b>\n\nআপনার পছন্দের ভাষা বেছে নিন:",
+        "btn_lang_en": "🇬🇧 English",
+        "btn_lang_bn": "🇧🇩 বাংলা",
+        "lang_changed": "✅ ভাষা <b>বাংলা</b> করা হয়েছে।",
+    },
 }
 
-def get_user_language(user_id):
-    return USERS.get(str(user_id), {}).get("language", "ar")
+def get_user_lang(uid):
+    """Returns 'en' or 'bn' for this user. Defaults to English if never set."""
+    user_data = get_user(uid)
+    lang = user_data.get("lang", DEFAULT_LANG)
+    return lang if lang in TEXTS else DEFAULT_LANG
 
-def set_user_language(user_id, lang):
-    USERS.setdefault(str(user_id), {})["language"] = lang
-    save_users()
+async def set_user_lang(uid, lang):
+    """Persists the user's chosen language ('en' or 'bn')."""
+    if lang not in TEXTS:
+        lang = DEFAULT_LANG
+    uid = str(uid)
+    async with balance_lock:
+        data = load_data()
+        if uid not in data:
+            data[uid] = {"user_id": uid, "balance": 0.0, "total_numbers": 0, "referral_count": 0}
+        data[uid]["lang"] = lang
+        save_data(data)
 
-def t(user_id, key):
-    lang = get_user_language(user_id)
-    return TEXTS.get(lang, TEXTS["ar"]).get(key, key)
+def tr(uid, key):
+    """Translated text lookup for this user's current language, with an
+    English fallback if a key is ever missing from a language pack."""
+    lang = get_user_lang(uid)
+    return TEXTS.get(lang, TEXTS["en"]).get(key, TEXTS["en"].get(key, ""))
 
-def save_pickle(path, obj):
-    with open(path, "wb") as f:
-        pickle.dump(obj, f)
+def is_menu_btn(text, key):
+    """True if `text` matches the given button key in EITHER language —
+    used so main-menu button taps are recognized no matter which language
+    keyboard the user is currently looking at."""
+    return text in (TEXTS["en"].get(key), TEXTS["bn"].get(key))
 
-def load_pickle(path):
-    if os.path.exists(path):
-        with open(path, "rb") as f:
-            return pickle.load(f)
-    return None
+# ==================== OTP RATE CONFIGURATION ====================
+DEFAULT_OTP_RATE = 0.50   # fallback used only if site_settings has never been saved
 
-def save_cookies():
-    save_pickle(COOKIES_FILE, session1.cookies.get_dict())
-
-def save_cookies_site3():
-    save_pickle(COOKIES_FILE_SITE3, session3.cookies.get_dict())
-
-def save_cookies_site4():
-    save_pickle(COOKIES_FILE_SITE4, session4.cookies.get_dict())
-
-def login_attempt_group():
-    global session1, is_logged_in_site1
+def get_otp_rate():
+    """Admin-configurable OTP payout rate (BDT per OTP). Persisted in the
+    same SQLite database (SITE_SETTINGS_FILE section); falls back to
+    DEFAULT_OTP_RATE (0.50) until an admin changes it from SYSTEM CONFIGURATION."""
+    settings = load_data(SITE_SETTINGS_FILE)
     try:
-        resp = session1.get(LOGIN_PAGE_URL, timeout=HTTP_TIMEOUT)
-        if resp.status_code != 200:
-            return False
-        match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
-        if not match:
-            return False
-        captcha_answer = int(match.group(1)) + int(match.group(2))
-        payload = {"username": USERNAME, "password": PASSWORD, "capt": str(captcha_answer)}
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Referer": LOGIN_PAGE_URL,
-            "Origin": BASE_URL,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        }
-        resp = session1.post(LOGIN_POST_URL, data=payload, headers=headers, timeout=HTTP_TIMEOUT, allow_redirects=True)
-        if ("dashboard" in resp.text.lower() or "logout" in resp.text.lower() or "agent" in resp.url.lower() or "/ints/agent" in resp.url or resp.url != LOGIN_PAGE_URL):
-            is_logged_in_site1 = True
-            save_cookies()
-            try:
-                session1.get(BASE_URL + "/ints/agent/SMSCDRReports", timeout=HTTP_TIMEOUT)
-            except Exception:
-                pass
-            return True
-        return False
-    except Exception:
-        return False
+        rate = float(settings.get("otp_rate", DEFAULT_OTP_RATE))
+        return rate if rate > 0 else DEFAULT_OTP_RATE
+    except (TypeError, ValueError):
+        return DEFAULT_OTP_RATE
 
-def login(max_retries=5):
-    global session1
-    for attempt in range(1, max_retries + 1):
-        if attempt > 1:
-            session1 = create_session_group()
-            time.sleep(2)
-        if login_attempt_group():
-            return True
-        time.sleep(min(20, 4 * attempt))
-    return False
+def set_otp_rate(rate):
+    settings = load_data(SITE_SETTINGS_FILE)
+    settings["otp_rate"] = float(rate)
+    save_data(settings, SITE_SETTINGS_FILE)
 
-def check_login_valid():
+# ==================== REFER CONTROL (admin: SYSTEM CONFIGURATION -> REFER CONTROL) ====================
+DEFAULT_REFERRAL_BONUS = 0.50   # BDT added to the referrer for every new person who joins
+DEFAULT_REF_COMMISSION = 0.01   # BDT per successful OTP of a referred user (switch is OFF by default)
+
+def _ref_setting(key, default):
     try:
-        r = session1.get(BASE_URL + "/ints/agent/res/data_smscdr.php?per-page=10", headers={"X-Requested-With": "XMLHttpRequest", "Referer": BASE_URL + "/ints/agent/SMSCDRReports"}, timeout=15)
-        return r.status_code == 200 and "login" not in r.text.lower()
-    except Exception:
-        return False
+        v = float(load_data(SITE_SETTINGS_FILE).get(key, default))
+        return v if v >= 0 else default
+    except (TypeError, ValueError):
+        return default
 
-def test_bolt_type_login(site_key, account):
-    username = account.get("username")
-    password = account.get("password")
-    if site_key == "MSI":
-        session_obj, base_url, login_page, login_post, timeout = session6, BASE_URL6, LOGIN_PAGE_URL6, LOGIN_POST_URL6, HTTP_TIMEOUT6
-    elif site_key == "proton SMS":
-        session_obj, base_url, login_page, login_post, timeout = session7, BASE_URL7, LOGIN_PAGE_URL7, LOGIN_POST_URL7, HTTP_TIMEOUT7
-    elif site_key == "IMS":
-        session_obj, base_url, login_page, login_post, timeout = session8, BASE_URL8, LOGIN_PAGE_URL8, LOGIN_POST_URL8, HTTP_TIMEOUT8
-    elif site_key == "Roxy SMS":
-        try:
-            scraper = cloudscraper.create_scraper()
-            resp = scraper.post("http://www.roxysms.net/signin", data={"username": username, "password": password}, headers={"Referer": "http://www.roxysms.net/Login"}, timeout=20)
-            return resp.status_code == 200 and ("success" in resp.text.lower() or "logout" in resp.text.lower())
-        except Exception:
-            return False
-    else:
-        return False
+def set_ref_setting(key, value):
+    settings = load_data(SITE_SETTINGS_FILE)
+    settings[key] = float(value)
+    save_data(settings, SITE_SETTINGS_FILE)
 
-    try:
-        resp = session_obj.get(login_page, timeout=timeout)
-        match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
-        if not match:
-            return False
-        captcha_answer = int(match.group(1)) + int(match.group(2))
-        crlf_match = re.search(r"name=['\"]crlf['\"].*?value=['\"]([^'\"]+)['\"]", resp.text)
-        payload = {"username": username, "password": password, "capt": str(captcha_answer)}
-        if crlf_match:
-            payload["crlf"] = crlf_match.group(1)
-        resp = session_obj.post(login_post, data=payload, headers={"Content-Type": "application/x-www-form-urlencoded", "Referer": login_page, "Origin": base_url}, timeout=timeout, allow_redirects=True)
-        return any(k in resp.text.lower() or k in resp.url.lower() for k in ("dashboard", "logout", "agent", "reports"))
-    except Exception:
-        return False
+def get_referral_bonus():
+    return _ref_setting("referral_bonus", DEFAULT_REFERRAL_BONUS)
 
-def extract_sms(html_text, debug_mode=False):
-    soup = BeautifulSoup(html_text, "html.parser")
-    messages = []
-    table = soup.find("table", class_="table") or (soup.find_all("table")[0] if soup.find_all("table") else None)
-    if not table:
-        return []
-    tbody = table.find("tbody")
-    rows = table.find_all("tr") if not tbody else tbody.find_all("tr")
-    for row in rows:
-        tds = row.find_all("td")
-        if not tds:
-            continue
-        cols = [td.get_text(separator=" ", strip=True) for td in tds]
-        if len(cols) < 5:
-            continue
-        msg = {
-            "date": cols[0],
-            "ref": cols[1],
-            "source": cols[2],
-            "client": cols[3],
-            "destination": cols[4],
-            "raw": cols[5] if len(cols) > 5 else cols[4]
-        }
-        if msg["date"] and msg["raw"] and len(msg["raw"]) > 3:
-            messages.append(msg)
-    return messages
+def get_ref_commission():
+    return _ref_setting("ref_commission", DEFAULT_REF_COMMISSION)
 
-def normalize_otp_from_text(text):
-    if not text:
-        return None
-    candidates = []
-    match = re.search(r'(?:telegram|تيليجرام|تلجرام)\s*(?:code|كود)?\s*[:\s]*(\d{4,6})', text, re.IGNORECASE)
-    if match:
-        candidates.append({'otp': match.group(1), 'position': match.start(), 'confidence': 100})
-    match = re.search(r'(\d{3})\s+(\d{3})\s+is\s+your\s+Instagram\s+code', text, re.IGNORECASE)
-    if match:
-        digits = match.group(1) + match.group(2)
-        candidates.append({'otp': f"{digits[:3]} {digits[3:]}", 'position': match.start(), 'confidence': 99})
-    for match in re.finditer(r'(?:code|كود|رمز|verification|تحقق)[:\s]*(\d{4,8})', text, re.IGNORECASE):
-        digits = match.group(1)
-        if 4 <= len(digits) <= 8:
-            candidates.append({'otp': digits, 'position': match.start(), 'confidence': 95})
-    for match in re.finditer(r'[\u200e\u200f\u202a-\u202e]?(\d{3})\s*-\s*(\d{3})', text):
-        candidates.append({'otp': f"{match.group(1)}-{match.group(2)}", 'position': match.start(), 'confidence': 110})
-    for match in re.finditer(r'(\d{3})\s+(\d{3})', text):
-        digits = match.group(1) + match.group(2)
-        if len(digits) == 6:
-            candidates.append({'otp': f"{digits[:3]} {digits[3:]}", 'position': match.start(), 'confidence': 90})
-    for match in re.finditer(r'\b\d{6}\b', text):
-        digits = match.group(0)
-        candidates.append({'otp': f"{digits[:3]} {digits[3:]}", 'position': match.start(), 'confidence': 70})
-    for match in re.finditer(r'\b\d{5}\b', text):
-        candidates.append({'otp': match.group(0), 'position': match.start(), 'confidence': 65})
-    for match in re.finditer(r'\b\d{4}\b', text):
-        candidates.append({'otp': match.group(0), 'position': match.start(), 'confidence': 60})
-    if candidates:
-        candidates.sort(key=lambda x: (-x['confidence'], x['position']))
-        return candidates[0]['otp']
-    for digit_group in reversed(re.findall(r'\d+', text)):
-        if len(digit_group) >= 4:
-            return digit_group
-    return None
+def is_ref_commission_on():
+    return get_switch("ref_commission", False)
 
-def try_decode(raw):
-    if raw is None:
-        return ""
-    if isinstance(raw, str):
-        return raw.replace('\x00', '').strip()
-    if not isinstance(raw, bytes):
-        return str(raw).replace('\x00', '').strip()
-    for enc in ("utf-8", "utf-16", "utf-16-be", "utf-16-le", "cp1256", "windows-1256", "iso-8859-6", "latin-1"):
-        try:
-            return raw.decode(enc).replace('\x00', '').strip()
-        except Exception:
-            continue
-    return raw.decode('utf-8', errors='replace').replace('\x00', '').strip()
+def calc_ref_commission():
+    """Commission per successful OTP of a referred user (fixed amount set by the admin)."""
+    return round(get_ref_commission(), 4)
 
-def extract_from_message(raw_text):
-    if not raw_text:
-        return None, None
-    decoded_text = try_decode(raw_text)
-    text = html.unescape(decoded_text)
-    otp = normalize_otp_from_text(text)
-    return otp, text
+# ==================== SERVICE ENABLE / DISABLE (GET NUMBER SERVICES) ====================
+# All liveaccess services (Facebook, Instagram, etc.) are enabled by default.
+# Admin can disable individual services from SYSTEM CONFIGURATION → MANAGE SERVICES;
+# disabled services are simply hidden from the user's GET NUMBER service list.
 
-def clean_number(num_str):
-    if num_str is None:
-        return ""
-    if isinstance(num_str, (int, float)):
-        return str(int(num_str))
-    return re.sub(r'\D', '', str(num_str))
+def get_disabled_services():
+    _get_db_connection()
+    return [n[4:] for n, s in _SWITCH_CACHE.items() if n.startswith("svc_") and s == "OFF"]
 
-def clean_html_site2(text):
-    if text is None or text == "":
-        return ""
-    try:
-        text = re.sub(r'<[^>]+>', '', str(text))
-        return html.unescape(text).replace('\x00', '').strip()
-    except Exception:
-        return str(text) if text else ""
+def is_service_enabled(sid):
+    return get_switch("svc_" + str(sid), True)
 
-def solve_captcha_timesms(html_content):
-    match = re.search(r'(\d+)\s*([+\-*/])\s*(\d+)\s*=?\s*\?', html_content)
-    if match:
-        n1, op, n2 = int(match.group(1)), match.group(2), int(match.group(3))
-        if op == '+':
-            return str(n1 + n2)
-        if op == '-':
-            return str(n1 - n2)
-        if op == '*':
-            return str(n1 * n2)
-        if op == '/':
-            return str(n1 // n2) if n2 else '0'
-    return None
+def set_service_enabled(sid, enabled):
+    set_switch("svc_" + str(sid), enabled)
 
-def login_site10(account=None):
-    global is_logged_in_site10, session10
-    site_key = "TimeSMS"
-    if account:
-        user = account.get("username")
-        pw = account.get("password")
-        sess = make_timesms_session(session10.headers)
-    else:
-        user = USERNAME10
-        pw = PASSWORD10
-        session10 = make_timesms_session(session10.headers)
-        sess = session10
-
-    login_url = SETTINGS[site_key]["login_page_url"]
-    submit_url = SETTINGS[site_key]["login_post_url"]
-    try:
-        resp = sess.get(login_url, timeout=20, verify=False)
-        captcha = solve_captcha_timesms(resp.text)
-        if not captcha:
-            return False
-        login_resp = sess.post(submit_url, data={'username': user, 'password': pw, 'capt': captcha}, headers={'Referer': login_url}, timeout=20, allow_redirects=True, verify=False)
-        if 'login' not in str(login_resp.url).lower():
-            if not account:
-                is_logged_in_site10 = True
-            return sess if account else True
-    except Exception as e:
-        print(f"[TimeSMS] Warning (handled): {e}", flush=True)
-    return False
-
-def login_site2():
-    global is_logged_in_site2
-    try:
-        resp = session2.get(LOGIN_PAGE_URL2, timeout=HTTP_TIMEOUT2)
-        match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
-        if not match:
-            return False
-        captcha_answer = int(match.group(1)) + int(match.group(2))
-        resp = session2.post(
-            LOGIN_POST_URL2,
-            data={"username": USERNAME2, "password": PASSWORD2, "capt": str(captcha_answer)},
-            headers={"Content-Type": "application/x-www-form-urlencoded", "Referer": LOGIN_PAGE_URL2, "Origin": BASE_URL2},
-            timeout=HTTP_TIMEOUT2,
-            allow_redirects=True
-        )
-        if any(k in resp.text.lower() or k in resp.url.lower() for k in ("dashboard", "logout", "agent", "/ints/agent")) or resp.url != LOGIN_PAGE_URL2:
-            is_logged_in_site2 = True
-            return True
-    except Exception:
-        pass
-    return False
-
-def login_site3():
-    global is_logged_in_site3
-    try:
-        resp = session3.get(LOGIN_PAGE_URL3, timeout=HTTP_TIMEOUT3)
-        match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
-        if not match:
-            return False
-        captcha_answer = int(match.group(1)) + int(match.group(2))
-        resp = session3.post(LOGIN_POST_URL3, data={"username": USERNAME3, "password": PASSWORD3, "capt": str(captcha_answer)}, headers={"Content-Type": "application/x-www-form-urlencoded", "Referer": LOGIN_PAGE_URL3}, timeout=HTTP_TIMEOUT3, allow_redirects=True)
-        if resp.url != LOGIN_PAGE_URL3:
-            is_logged_in_site3 = True
-            save_cookies_site3()
-            return True
-    except Exception:
-        pass
-    return False
-
-def login_site4():
-    global is_logged_in_site4
-    try:
-        resp = session4.get(LOGIN_PAGE_URL4, timeout=HTTP_TIMEOUT4)
-        match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
-        if not match:
-            return False
-        captcha_answer = int(match.group(1)) + int(match.group(2))
-        resp = session4.post(LOGIN_POST_URL4, data={"username": USERNAME4, "password": PASSWORD4, "capt": str(captcha_answer)}, headers={"Content-Type": "application/x-www-form-urlencoded", "Referer": LOGIN_PAGE_URL4}, timeout=HTTP_TIMEOUT4, allow_redirects=True)
-        if resp.url != LOGIN_PAGE_URL4:
-            is_logged_in_site4 = True
-            save_cookies_site4()
-            return True
-    except Exception:
-        pass
-    return False
-
-def login_site5():
-    return False
-
-def load_data():
-    global COUNTRIES, CHANNELS, USERS, ADMINS, BANNED, OTP_GROUP, GROUPS, REFERRALS
-    if os.path.exists(COUNTRIES_FILE):
-        with open(COUNTRIES_FILE, "r", encoding="utf-8") as f:
-            COUNTRIES = json.load(f)
-    if os.path.exists(CHANNELS_FILE):
-        with open(CHANNELS_FILE, "r", encoding="utf-8") as f:
-            CHANNELS = json.load(f)
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            USERS = json.load(f)
-    if os.path.exists(ADMINS_FILE):
-        with open(ADMINS_FILE, "r", encoding="utf-8") as f:
-            ADMINS = json.load(f)
-    if MAIN_ADMIN_ID != 0 and MAIN_ADMIN_ID not in ADMINS:
-        ADMINS.append(MAIN_ADMIN_ID)
-        save_admins()
-    if os.path.exists(BANNED_FILE):
-        with open(BANNED_FILE, "r", encoding="utf-8") as f:
-            BANNED = json.load(f)
-    if os.path.exists(OTP_GROUP_FILE):
-        with open(OTP_GROUP_FILE, "r", encoding="utf-8") as f:
-            OTP_GROUP = json.load(f).get("group_id")
-    if os.path.exists(GROUPS_FILE):
-        with open(GROUPS_FILE, "r", encoding="utf-8") as f:
-            GROUPS = json.load(f)
-    if os.path.exists(REFERRALS_FILE):
-        with open(REFERRALS_FILE, "r", encoding="utf-8") as f:
-            REFERRALS = json.load(f)
-    load_numbers_admins()
-    load_statistics()
-
-def save_countries():
-    with open(COUNTRIES_FILE, "w", encoding="utf-8") as f:
-        json.dump(COUNTRIES, f, indent=2, ensure_ascii=False)
-
-def save_channels():
-    with open(CHANNELS_FILE, "w", encoding="utf-8") as f:
-        json.dump(CHANNELS, f, indent=2, ensure_ascii=False)
-
-def save_users():
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(USERS, f, indent=2, ensure_ascii=False)
-
-def save_admins():
-    with open(ADMINS_FILE, "w", encoding="utf-8") as f:
-        json.dump(ADMINS, f, indent=2, ensure_ascii=False)
-
-def save_banned():
-    with open(BANNED_FILE, "w", encoding="utf-8") as f:
-        json.dump(BANNED, f, indent=2, ensure_ascii=False)
-
-def save_otp_group():
-    with open(OTP_GROUP_FILE, "w", encoding="utf-8") as f:
-        json.dump({"group_id": OTP_GROUP}, f, indent=2)
-
-def save_groups():
-    with open(GROUPS_FILE, "w", encoding="utf-8") as f:
-        json.dump(GROUPS, f, indent=2)
-
-def load_referrals():
-    global REFERRALS
-    if os.path.exists(REFERRALS_FILE):
-        try:
-            with open(REFERRALS_FILE, "r", encoding="utf-8") as f:
-                REFERRALS = json.load(f)
-        except Exception:
-            REFERRALS = {}
-    return REFERRALS
-
-def save_referrals(data=None):
-    global REFERRALS
-    if data:
-        REFERRALS = data
-    with open(REFERRALS_FILE, "w", encoding="utf-8") as f:
-        json.dump(REFERRALS, f, indent=2, ensure_ascii=False)
-
-def load_referral_settings():
-    if os.path.exists(REFERRAL_SETTINGS_FILE):
-        try:
-            with open(REFERRAL_SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return DEFAULT_REFERRAL_SETTINGS.copy()
-
-def save_referral_settings(settings):
-    with open(REFERRAL_SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2, ensure_ascii=False)
-
-def load_withdrawal_requests():
-    if os.path.exists(WITHDRAWAL_REQUESTS_FILE):
-        try:
-            with open(WITHDRAWAL_REQUESTS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return []
-
-def save_withdrawal_requests(reqs):
-    with open(WITHDRAWAL_REQUESTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(reqs, f, indent=2, ensure_ascii=False)
-
-DEFAULT_WITHDRAWAL_METHODS = {
-    "vodafone": {"name_ar": "فودافون كاش", "name_en": "Vodafone Cash", "enabled": True, "details_ar": "رقم الهاتف", "details_en": "Phone number"},
-    "usdt_trc20": {"name_ar": "USDT (TRC20)", "name_en": "USDT (TRC20)", "enabled": True, "details_ar": "عنوان محفظة TRC20", "details_en": "TRC20 wallet address"},
-    "usdt_bep20": {"name_ar": "USDT (BEP20)", "name_en": "USDT (BEP20)", "enabled": True, "details_ar": "عنوان محفظة BEP20", "details_en": "BEP20 wallet address"},
-    "binance_id": {"name_ar": "Binance ID", "name_en": "Binance ID", "enabled": True, "details_ar": "Binance Pay ID أو Email", "details_en": "Binance Pay ID or Email"}
+# ==================== MAIN MENU BUTTON ENABLE / DISABLE ====================
+# SEARCH OTP, GET 2FA, LEADERBOARD, PROFILE and SUPPORT can each be hidden from the
+# main menu by the admin. GET 2FA and LEADERBOARD are OFF by default; the rest are ON.
+DEFAULT_BUTTON_FLAGS = {
+    "btn_search_otp": True,
+    "btn_2fa": False,
+    "btn_leaderboard": False,
+    "btn_profile": True,
+    "btn_support": True,
+    "btn_traffic": True,
 }
 
-def load_withdrawal_methods():
-    if os.path.exists(WITHDRAWAL_METHODS_FILE):
-        try:
-            with open(WITHDRAWAL_METHODS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return DEFAULT_WITHDRAWAL_METHODS.copy()
+BUTTON_FLAG_LABELS = {
+    "btn_search_otp": "🔍 SEARCH OTP",
+    "btn_2fa": "⚡ GET 2FA",
+    "btn_leaderboard": "🏆 LEADERBOARD",
+    "btn_profile": "👤 PROFILE",
+    "btn_support": "💬 SUPPORT",
+    "btn_traffic": "🚦 TRAFFIC",
+}
 
-def save_withdrawal_methods(methods):
-    with open(WITHDRAWAL_METHODS_FILE, "w", encoding="utf-8") as f:
-        json.dump(methods, f, indent=2, ensure_ascii=False)
+def get_button_flags():
+    return {k: get_switch(k, d) for k, d in DEFAULT_BUTTON_FLAGS.items()}
 
-def load_welcome_messages():
-    if os.path.exists(WELCOME_MESSAGES_FILE):
-        try:
-            with open(WELCOME_MESSAGES_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return DEFAULT_WELCOME_MESSAGES.copy()
+def is_button_enabled(key):
+    return get_switch(key, DEFAULT_BUTTON_FLAGS.get(key, True))
 
-def save_welcome_messages(messages):
-    with open(WELCOME_MESSAGES_FILE, "w", encoding="utf-8") as f:
-        json.dump(messages, f, indent=2, ensure_ascii=False)
+def set_button_enabled(key, enabled):
+    set_switch(key, enabled)
 
-def generate_referral_code(user_id):
-    return hashlib.md5(f"{user_id}_{datetime.now().timestamp()}".encode()).hexdigest()[:8].upper()
+# ==================== NUMBER MANAGE (OLD NUMBER DELETE) ====================
+# Admin → SYSTEM CONFIGURATION → NUMBER MANAGE.
+# OFF (default): pressing NEW NUMBER keeps the old number message above the new one.
+# ON : pressing NEW NUMBER automatically deletes the old number message.
 
-def get_user_referral_data(user_id):
-    global REFERRALS
-    REFERRALS = load_referrals()
-    user_key = str(user_id)
-    if user_key not in REFERRALS:
-        REFERRALS[user_key] = {
-            "referral_code": generate_referral_code(user_id),
-            "referred_by": None,
-            "referrals": [],
-            "referred_users_codes": {},
-            "active_referrals": 0,
-            "active_referrals_list": [],
-            "codes_received": 0,
-            "balance": 0.0,
-            "total_earned": 0.0,
-            "referral_used": False
-        }
-        save_referrals(REFERRALS)
-    return REFERRALS[user_key]
+def is_old_number_delete_on():
+    return get_switch("old_number_delete", False)
 
-def process_referral(user_id, referrer_id):
-    global REFERRALS
-    REFERRALS = load_referrals()
-    user_key = str(user_id)
-    referrer_key = str(referrer_id)
-    if user_key not in REFERRALS:
-        REFERRALS[user_key] = {"referred_by": referrer_key, "referrals": [], "active_referrals": 0, "codes_received": 0, "balance": 0.0, "total_earned": 0.0}
-    else:
-        if REFERRALS[user_key].get("referred_by"):
-            return False
-        REFERRALS[user_key]["referred_by"] = referrer_key
-    REFERRALS.setdefault(referrer_key, {"referred_by": None, "referrals": [], "active_referrals": 0, "codes_received": 0, "balance": 0.0, "total_earned": 0.0})
-    if user_key not in REFERRALS[referrer_key]["referrals"]:
-        REFERRALS[referrer_key]["referrals"].append(user_key)
-    save_referrals(REFERRALS)
-    return True
+def set_old_number_delete(enabled):
+    set_switch("old_number_delete", enabled)
 
-def add_code_bonus(user_id):
-    global REFERRALS
-    REFERRALS = load_referrals()
-    settings = load_referral_settings()
-    user_key = str(user_id)
-    REFERRALS.setdefault(user_key, {"referred_by": None, "referrals": [], "active_referrals": 0, "codes_received": 0, "balance": 0.0, "total_earned": 0.0})
-    REFERRALS[user_key]["codes_received"] += 1
-    code_bonus = settings.get("code_bonus", 0.01)
-    REFERRALS[user_key]["balance"] += code_bonus
-    REFERRALS[user_key]["total_earned"] += code_bonus
-    referrer_key = REFERRALS[user_key].get("referred_by")
-    if referrer_key and referrer_key in REFERRALS:
-        codes_required = settings.get("codes_required_for_referral", 3)
-        if REFERRALS[user_key]["codes_received"] == codes_required:
-            REFERRALS[referrer_key]["active_referrals"] += 1
-            referral_bonus = settings.get("referral_bonus", 0.50)
-            REFERRALS[referrer_key]["balance"] += referral_bonus
-            REFERRALS[referrer_key]["total_earned"] += referral_bonus
-    save_referrals(REFERRALS)
+# ==================== NUMBER TEMPLATE VERSION 2 ====================
+# OFF: the normal "YOUR NUMBER" message (country / range / number / status).
+# ON (default): very plain message - only country flag + number, with a one-tap copy button.
 
-def load_statistics():
-    global STATISTICS
-    if os.path.exists(STATISTICS_FILE):
-        try:
-            with open(STATISTICS_FILE, 'r', encoding='utf-8') as f:
-                STATISTICS = json.load(f)
-        except Exception:
-            pass
+def is_number_template_v2_on():
+    return get_switch("number_template_v2", True)
 
-def save_statistics():
-    with open(STATISTICS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(STATISTICS, f, indent=2, ensure_ascii=False)
+def set_number_template_v2(enabled):
+    set_switch("number_template_v2", enabled)
 
-def update_statistics():
-    global STATISTICS
-    today = datetime.now().date().isoformat()
-    week_num = datetime.now().isocalendar()[1]
-    month = datetime.now().strftime('%Y-%m')
-    if STATISTICS.get("last_reset_day") != today:
-        STATISTICS["codes_today"] = 0
-        STATISTICS["last_reset_day"] = today
-    if STATISTICS.get("last_reset_week") != week_num:
-        STATISTICS["codes_this_week"] = 0
-        STATISTICS["last_reset_week"] = week_num
-    if STATISTICS.get("last_reset_month") != month:
-        STATISTICS["codes_this_month"] = 0
-        STATISTICS["last_reset_month"] = month
-    STATISTICS["total_codes"] += 1
-    STATISTICS["codes_today"] += 1
-    STATISTICS["codes_this_week"] += 1
-    STATISTICS["codes_this_month"] += 1
-    STATISTICS.setdefault("daily_history", {})
-    STATISTICS["daily_history"][today] = STATISTICS["daily_history"].get(today, 0) + 1
-    save_statistics()
+def build_number_text_v2(flag, num=None, otp=None, sms=None):
+    """V2 number message: just the flag + NEW NUMBER (the number itself is a copy button)."""
+    text = f"{flag} <b>NEW NUMBER</b>"
+    if otp:
+        text += f"\n🔑 <code>{html.escape(str(otp))}</code>"
+    return text
 
-def get_statistics_text():
+def build_otp_text_v2(flag, num, otp):
+    """V2 OTP message: short and neat."""
     return (
-        f"📊 <b>إحصائيات البوت</b>\n\n"
-        f"👥 <b>إجمالي المستخدمين:</b> {len(USERS)}\n"
-        f"🔢 <b>إجمالي الأكواد:</b> {STATISTICS.get('total_codes', 0)}\n\n"
-        f"📅 <b>أكواد اليوم:</b> {STATISTICS.get('codes_today', 0)}\n"
-        f"📆 <b>أكواد هذا الأسبوع:</b> {STATISTICS.get('codes_this_week', 0)}\n"
-        f"📊 <b>أكواد هذا الشهر:</b> {STATISTICS.get('codes_this_month', 0)}\n"
+        f"✅ <b>OTP RECEIVED</b> ✅\n\n"
+        f"<blockquote>{flag} <code>+{num}</code></blockquote>\n"
+        f"<blockquote>🔑 <code>{html.escape(str(otp))}</code></blockquote>"
     )
+
+def build_otp_keyboard_v2(otp):
+    """One-tap copy button for the OTP (V2 only)."""
+    otp = str(otp or "").strip()
+    if CopyTextButton is None or not otp or otp == "N/A":
+        return None
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"🔑 {otp}", copy_text=CopyTextButton(text=otp), style="success")
+    ]])
+
+def build_number_keyboard(num=None, v2=False, flag="", sid=""):
+    new_btn = InlineKeyboardButton("🔄 NEW NUMBER", callback_data="same_range", style="success")
+    grp_btn = InlineKeyboardButton("📢 CHECK OTP GROUP", url=OTP_GROUP_LINK, style="primary")
+    if not v2:
+        return InlineKeyboardMarkup([[new_btn], [grp_btn]])
+
+    rows = []
+    # 1) platform / service
+    if sid:
+        rows.append([InlineKeyboardButton(f"📱 {sid}", callback_data="noop_svc", style="primary")])
+    # 2) flag + number — tap = copy
+    if num:
+        label = f"{flag} +{num}".strip()
+        if CopyTextButton is not None:
+            rows.append([InlineKeyboardButton(label, copy_text=CopyTextButton(text=f"+{num}"), style="success")])
+        else:
+            rows.append([InlineKeyboardButton(label, callback_data=f"copy_text_+{num}", style="success")])
+    # 3) change country (full width), then NEW NUMBER + OTP GROUP side by side
+    rows.append([InlineKeyboardButton("🌍 CHANGE COUNTRY", callback_data="change_country", style="danger")])
+    rows.append([new_btn, grp_btn])
+    return InlineKeyboardMarkup(rows)
+
+# ==================== REFERRAL / WITHDRAW CONFIGURATION ====================
+# (referral reward is now set from Admin -> SYSTEM CONFIGURATION -> REFER CONTROL)
+DEFAULT_MIN_WITHDRAW = 60   # fallback used only if site_settings has never been saved
+BDT_TO_USD_RATE = 125       # used only to show the admin a USD estimate for BINANCE withdraws
+MAX_WITHDRAW = 10000
+
+# ==================== PAYMENT METHOD ENABLE / DISABLE ====================
+# BKASH, NAGAD, ROCKET and BINANCE are all ON by default. Admin can turn any
+# of them off from ADMIN PANEL → PAYMENT SETUP; disabled methods are
+# simply hidden from the user's withdraw method list.
+DEFAULT_PAYMENT_FLAGS = {
+    "pm_bkash": True,
+    "pm_nagad": True,
+    "pm_rocket": True,
+    "pm_binance": True,
+}
+
+PAYMENT_METHOD_LABELS = {
+    "pm_bkash": "📱 BKASH",
+    "pm_nagad": "💵 NAGAD",
+    "pm_rocket": "🚀 ROCKET",
+    "pm_binance": "🏦 BINANCE",
+}
+
+PAYMENT_METHOD_NAMES = {
+    "pm_bkash": "BKASH",
+    "pm_nagad": "NAGAD",
+    "pm_rocket": "ROCKET",
+    "pm_binance": "BINANCE",
+}
+
+def get_payment_flags():
+    return {k: get_switch(k, d) for k, d in DEFAULT_PAYMENT_FLAGS.items()}
+
+def is_payment_method_enabled(key):
+    return get_switch(key, DEFAULT_PAYMENT_FLAGS.get(key, True))
+
+def set_payment_method_enabled(key, enabled):
+    set_switch(key, enabled)
+
+# ==================== PER-METHOD MINIMUM WITHDRAW ====================
+# Each payment method (BKASH/NAGAD/ROCKET/BINANCE) has its own minimum
+# withdraw amount, set from ADMIN PANEL → PAYMENT SETUP → MINIMUM WITHDRAW LIMITS.
+
+def get_min_withdraw_map():
+    settings = load_data(SITE_SETTINGS_FILE)
+    raw = settings.get("min_withdraw")
+    raw = raw if isinstance(raw, dict) else {}
+    result = {}
+    for key in PAYMENT_METHOD_LABELS:
+        try:
+            amount = float(raw.get(key, DEFAULT_MIN_WITHDRAW))
+            result[key] = amount if amount > 0 else DEFAULT_MIN_WITHDRAW
+        except (TypeError, ValueError):
+            result[key] = DEFAULT_MIN_WITHDRAW
+    return result
+
+def get_min_withdraw(key=None):
+    """With a specific pm_xxx key, returns that method's own minimum withdraw.
+    With no key (used before the user has picked a method), returns the lowest
+    minimum among currently-enabled methods, so the initial balance gate is as
+    permissive as possible."""
+    amounts = get_min_withdraw_map()
+    if key is None:
+        enabled = [amounts[k] for k in amounts if is_payment_method_enabled(k)]
+        return min(enabled) if enabled else DEFAULT_MIN_WITHDRAW
+    return amounts.get(key, DEFAULT_MIN_WITHDRAW)
+
+def set_min_withdraw(key, amount):
+    settings = load_data(SITE_SETTINGS_FILE)
+    raw = settings.get("min_withdraw")
+    raw = dict(raw) if isinstance(raw, dict) else {}
+    raw[key] = float(amount)
+    settings["min_withdraw"] = raw
+    save_data(settings, SITE_SETTINGS_FILE)
+
+request_queue = asyncio.Queue()
+MAX_WORKERS = 5000
+
+client_async = httpx.AsyncClient(
+    timeout=httpx.Timeout(connect=3.0, read=8.0, write=5.0, pool=3.0),
+    headers={"X-API-Key": API_KEY},
+    limits=httpx.Limits(max_connections=20, max_keepalive_connections=5)
+)
+
+active_numbers = {}
+last_range = {}
+last_service = {}   # uid -> {"range": ..., "sid": ...}  (platform shown on the V2 number message)
+CHECK_INTERVAL = 3.0       # poll speed while someone is waiting for an OTP
+IDLE_CHECK_INTERVAL = 8.0  # sleep time when no number is waiting (no API call made)
+
+# ==================== LIVEACCESS CACHE ====================
+_liveaccess_cache = {"services": []}
+LIVEACCESS_REFRESH_INTERVAL = 60
+
+async def _do_liveaccess_fetch():
+    global _liveaccess_cache
+    try:
+        r = await client_async.get(f"{BASE_URL}/api/liveaccess")
+        data = r.json()
+        if data.get("status") == "ok":
+            svcs = data.get("services", [])
+            if svcs:
+                _liveaccess_cache["services"] = svcs
+                print(f"[liveaccess] cache updated — {len(svcs)} service(s)")
+    except Exception as e:
+        print(f"[liveaccess] fetch error: {e}")
+
+async def liveaccess_refresh_loop():
+    while True:
+        await _do_liveaccess_fetch()
+        await asyncio.sleep(LIVEACCESS_REFRESH_INTERVAL)
+
+def get_cached_services():
+    return _liveaccess_cache["services"]
+
+# ==================== CHECK IF USER IS ADMIN ====================
 
 def is_admin(user_id):
     return user_id in ADMINS
 
-def is_banned(user_id):
-    return user_id in BANNED
+# ==================== UNIFIED DATABASE (real SQLite database file) ====================
+# users, paid_sms, user_stats, referral_data, banned_users, withdraw_requests, datarange —
+# All these sections live in a single SQLite database file (DATABASE_FILE). activity_logs stays in a separate json file.
 
-def check_subscription(user_id):
-    if not CHANNELS:
-        return True
-    for channel in CHANNELS:
+_DB_SECTION_DEFAULTS = {
+    BANNED_USERS_FILE: [],
+}
+
+_DB_CONN = None
+_DB_CACHE = {}   # section -> JSON text (write-through cache, avoids disk reads)
+_SWITCH_CACHE = {}   # switch name -> "ON" / "OFF" (mirror of the `switches` table)
+
+def get_switch(name, default=False):
+    """Every admin ON/OFF switch lives as ONE row (name -> 'ON'/'OFF') in the
+    `switches` table of the main database. Rows are updated in place, so
+    nothing piles up over time."""
+    _get_db_connection()
+    state = _SWITCH_CACHE.get(name)
+    if state is None:
+        return bool(default)
+    return state == "ON"
+
+def set_switch(name, on):
+    conn = _get_db_connection()
+    state = "ON" if on else "OFF"
+    if _SWITCH_CACHE.get(name) == state:
+        return
+    conn.execute(
+        "INSERT INTO switches (name, state) VALUES (?, ?) "
+        "ON CONFLICT(name) DO UPDATE SET state = excluded.state",
+        (name, state)
+    )
+    conn.commit()
+    _SWITCH_CACHE[name] = state
+
+def _migrate_switches(conn):
+    """One-time, safe to repeat: pull old switch values out of site_settings
+    into the switches table, then remove the old copies."""
+    for name, state in conn.execute("SELECT name, state FROM switches"):
+        _SWITCH_CACHE[name] = state
+
+    def put(name, on):
+        if name not in _SWITCH_CACHE:
+            set_switch(name, on)
+
+    settings = load_data(SITE_SETTINGS_FILE)
+    changed = False
+    for key in ("button_flags", "payment_flags"):
+        old = settings.pop(key, None)
+        changed = True if old is not None else changed
+        if isinstance(old, dict):
+            for k, v in old.items():
+                put(k, bool(v))
+    old = settings.pop("disabled_services", None)
+    changed = True if old is not None else changed
+    if isinstance(old, list):
+        for sid in old:
+            put("svc_" + str(sid), False)
+    for key in ("old_number_delete", "number_template_v2"):
+        if key in settings:
+            put(key, bool(settings.pop(key)))
+            changed = True
+    if changed:
+        save_data(settings, SITE_SETTINGS_FILE)
+
+    for k, d in DEFAULT_BUTTON_FLAGS.items():
+        put(k, d)
+    for k, d in DEFAULT_PAYMENT_FLAGS.items():
+        put(k, d)
+    put("old_number_delete", False)
+    put("number_template_v2", True)
+
+def _get_db_connection():
+    global _DB_CONN
+    if _DB_CONN is None:
+        conn = sqlite3.connect(DATABASE_FILE, check_same_thread=False)
         try:
-            member = bot.get_chat_member(channel['id'], user_id)
-            if member.status not in ['member', 'administrator', 'creator']:
-                return False
+            # DELETE mode = no permanent -wal / -shm files. If an older run left the
+            # database in WAL mode, this switches it back and merges + removes them.
+            conn.execute("PRAGMA journal_mode=DELETE")
+            conn.execute("PRAGMA synchronous=FULL")
         except Exception:
-            continue
-    return True
-
-def get_flag(country_code):
-    if not country_code:
-        return "🌍"
-    return ''.join([chr(0x1F1E6 + ord(c) - ord('A')) for c in country_code.upper()])
-
-def detect_country_from_number(number, user_id=None):
-    try:
-        s = str(number).strip()
-        if not s.startswith('+'):
-            s = '+' + s
+            pass
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sections ("
+            "  section TEXT PRIMARY KEY,"
+            "  data TEXT NOT NULL"
+            ")"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS switches ("
+            "  name TEXT PRIMARY KEY,"
+            "  state TEXT NOT NULL CHECK (state IN ('ON','OFF'))"
+            ")"
+        )
+        conn.commit()
+        _DB_CONN = conn
+        _migrate_switches(conn)
         try:
-            parsed = phonenumbers.parse(s)
-        except phonenumbers.NumberParseException:
-            parsed = phonenumbers.parse(s + "00000000")
-        region = region_code_for_number(parsed)
-        if not region:
-            return "Unknown", "🌍", "UN"
-        lang = get_user_language(user_id) if user_id else "ar"
-        country_name = geocoder.description_for_number(parsed, lang)
-        if not country_name or country_name == "Unknown":
-            try:
-                py_country = pycountry.countries.get(alpha_2=region)
-                if py_country:
-                    country_name = py_country.name
-            except Exception:
-                pass
-        if not country_name or country_name == "Unknown":
-            country_name = geocoder.description_for_number(parsed, "en") or region
-        return country_name, get_flag(region), region
-    except Exception:
-        return "Unknown", "🌍", "UN"
+            if os.path.exists(ACTIVITY_LOGS_FILE):
+                os.remove(ACTIVITY_LOGS_FILE)
+        except OSError:
+            pass
+    return _DB_CONN
+
+def load_data(section=USER_DATA_FILE):
+    # activity log is no longer stored anywhere
+    if section == ACTIVITY_LOGS_FILE:
+        return []
+
+    default = _DB_SECTION_DEFAULTS.get(section, {})
+    text = _DB_CACHE.get(section)
+    if text is None:
+        conn = _get_db_connection()
+        row = conn.execute("SELECT data FROM sections WHERE section = ?", (section,)).fetchone()
+        if row is None:
+            return default
+        text = row[0]
+        _DB_CACHE[section] = text
+    try:
+        value = json.loads(text)
+    except:
+        return default
+    return value if isinstance(value, type(default)) else default
+
+def save_data(data, section=USER_DATA_FILE):
+    text = json.dumps(data)
+    if _DB_CACHE.get(section) == text:
+        return  # nothing changed — skip the disk write
+    conn = _get_db_connection()
+    conn.execute(
+        "INSERT INTO sections (section, data) VALUES (?, ?) "
+        "ON CONFLICT(section) DO UPDATE SET data = excluded.data",
+        (section, text)
+    )
+    conn.commit()
+    _DB_CACHE[section] = text
+
+# ==================== WITHDRAW DATA FUNCTIONS ====================
+
+def load_withdraw_requests():
+    return load_data(WITHDRAW_DATA_FILE)
+
+def save_withdraw_requests(data):
+    save_data(data, WITHDRAW_DATA_FILE)
+
+def generate_payment_id():
+    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=20))
+
+# ==================== BANNED USERS FUNCTIONS ====================
+
+def load_banned_users():
+    return load_data(BANNED_USERS_FILE)
+
+def save_banned_users(banned_list):
+    save_data(banned_list, BANNED_USERS_FILE)
+
+def is_user_banned(uid):
+    banned_list = load_banned_users()
+    return str(uid) in banned_list
+
+def ban_user(uid):
+    banned_list = load_banned_users()
+    uid_str = str(uid)
+    if uid_str not in banned_list:
+        banned_list.append(uid_str)
+        save_banned_users(banned_list)
+        return True
+    return False
+
+def unban_user(uid):
+    banned_list = load_banned_users()
+    uid_str = str(uid)
+    if uid_str in banned_list:
+        banned_list.remove(uid_str)
+        save_banned_users(banned_list)
+        return True
+    return False
+
+# ==================== REFERRAL DATA FUNCTIONS ====================
+
+def load_referral_data():
+    return load_data(REFERRAL_DATA_FILE)
+
+def save_referral_data(data):
+    save_data(data, REFERRAL_DATA_FILE)
+
+def update_referral_count(uid, count):
+    referral_data = load_referral_data()
+    uid_str = str(uid)
+    if uid_str not in referral_data:
+        referral_data[uid_str] = {"referral_count": 0}
+    referral_data[uid_str]["referral_count"] = count
+    save_referral_data(referral_data)
+
+def add_referral_earning(uid, amount):
+    rd = load_referral_data()
+    e = rd.setdefault(str(uid), {"referral_count": 0})
+    e["earned"] = round(float(e.get("earned", 0.0)) + float(amount), 4)
+    save_referral_data(rd)
+
+def get_referral_count(uid):
+    referral_data = load_referral_data()
+    uid_str = str(uid)
+    return referral_data.get(uid_str, {}).get("referral_count", 0)
+
+# ==================== DATA RANGE FILE ====================
+
+def load_range_db():
+    return load_data(DATA_RANGE_FILE)
+
+def save_range_db(data):
+    save_data(data, DATA_RANGE_FILE)
+
+def save_number_range_info(uid, number, range_text):
+    db = load_range_db()
+    flag, name = get_country_info(number)
+    db[normalize_number(number)] = {
+        "user_id": str(uid),
+        "number": f"+{normalize_number(number)}",
+        "range": range_text,
+        "country": f"{flag} {name}"
+    }
+    save_range_db(db)
+
+# ==================== COUNTRY MAPPING SECTION ====================
+
+def get_country_info(number):
+    number = str(number).strip()
+
+    country_map = {
+        "2376": ("🇨🇲", "Cameroon"),
+        "2250": ("🇨🇮", "Ivory Coast"),
+        "2613": ("🇲🇬", "Madagascar"),
+        "4077": ("🇷🇴", "Romania"),
+        "237": ("🇨🇲", "Cameroon"),
+        "225": ("🇨🇮", "Ivory Coast"),
+        "261": ("🇲🇬", "Madagascar"),
+        "20": ("🇪🇬", "Egypt"),
+        "27": ("🇿🇦", "South Africa"),
+        "234": ("🇳🇬", "Nigeria"),
+        "254": ("🇰🇪", "Kenya"),
+        "233": ("🇬🇭", "Ghana"),
+        "212": ("🇲🇦", "Morocco"),
+        "213": ("🇩🇿", "Algeria"),
+        "216": ("🇹🇳", "Tunisia"),
+        "218": ("🇱🇾", "Libya"),
+        "249": ("🇸🇩", "Sudan"),
+        "251": ("🇪🇹", "Ethiopia"),
+        "252": ("🇸🇴", "Somalia"),
+        "253": ("🇩🇯", "Djibouti"),
+        "255": ("🇹🇿", "Tanzania"),
+        "256": ("🇺🇬", "Uganda"),
+        "257": ("🇧🇮", "Burundi"),
+        "258": ("🇲🇿", "Mozambique"),
+        "260": ("🇿🇲", "Zambia"),
+        "263": ("🇿🇼", "Zimbabwe"),
+        "264": ("🇳🇦", "Namibia"),
+        "265": ("🇲🇼", "Malawi"),
+        "266": ("🇱🇸", "Lesotho"),
+        "267": ("🇧🇼", "Botswana"),
+        "268": ("🇸🇿", "Swaziland"),
+        "269": ("🇰🇲", "Comoros"),
+        "220": ("🇬🇲", "Gambia"),
+        "221": ("🇸🇳", "Senegal"),
+        "222": ("🇲🇷", "Mauritania"),
+        "223": ("🇲🇱", "Mali"),
+        "224": ("🇬🇳", "Guinea"),
+        "226": ("🇧🇫", "Burkina Faso"),
+        "227": ("🇳🇪", "Niger"),
+        "228": ("🇹🇬", "Togo"),
+        "229": ("🇧🇯", "Benin"),
+        "230": ("🇲🇺", "Mauritius"),
+        "231": ("🇱🇷", "Liberia"),
+        "232": ("🇸🇱", "Sierra Leone"),
+        "235": ("🇹🇩", "Chad"),
+        "236": ("🇨🇫", "Central African Republic"),
+        "238": ("🇨🇻", "Cape Verde"),
+        "239": ("🇸🇹", "Sao Tome and Principe"),
+        "240": ("🇬🇶", "Equatorial Guinea"),
+        "241": ("🇬🇦", "Gabon"),
+        "242": ("🇨🇬", "Congo"),
+        "243": ("🇨🇩", "DR Congo"),
+        "244": ("🇦🇴", "Angola"),
+        "245": ("🇬🇼", "Guinea-Bissau"),
+        "247": ("🇸🇭", "Saint Helena"),
+        "248": ("🇸🇨", "Seychelles"),
+        "250": ("🇷🇼", "Rwanda"),
+        "290": ("🇸🇭", "Saint Helena"),
+        "291": ("🇪🇷", "Eritrea"),
+        "40": ("🇷🇴", "Romania"),
+        "44": ("🇬🇧", "United Kingdom"),
+        "33": ("🇫🇷", "France"),
+        "49": ("🇩🇪", "Germany"),
+        "39": ("🇮🇹", "Italy"),
+        "34": ("🇪🇸", "Spain"),
+        "31": ("🇳🇱", "Netherlands"),
+        "32": ("🇧🇪", "Belgium"),
+        "41": ("🇨🇭", "Switzerland"),
+        "43": ("🇦🇹", "Austria"),
+        "46": ("🇸🇪", "Sweden"),
+        "47": ("🇳🇴", "Norway"),
+        "45": ("🇩🇰", "Denmark"),
+        "358": ("🇫🇮", "Finland"),
+        "351": ("🇵🇹", "Portugal"),
+        "353": ("🇮🇪", "Ireland"),
+        "36": ("🇭🇺", "Hungary"),
+        "48": ("🇵🇱", "Poland"),
+        "380": ("🇺🇦", "Ukraine"),
+        "370": ("🇱🇹", "Lithuania"),
+        "371": ("🇱🇻", "Latvia"),
+        "372": ("🇪🇪", "Estonia"),
+        "373": ("🇲🇩", "Moldova"),
+        "374": ("🇦🇲", "Armenia"),
+        "375": ("🇧🇾", "Belarus"),
+        "376": ("🇦🇩", "Andorra"),
+        "377": ("🇲🇨", "Monaco"),
+        "381": ("🇷🇸", "Serbia"),
+        "382": ("🇲🇪", "Montenegro"),
+        "385": ("🇭🇷", "Croatia"),
+        "386": ("🇸🇮", "Slovenia"),
+        "387": ("🇧🇦", "Bosnia and Herzegovina"),
+        "389": ("🇲🇰", "North Macedonia"),
+        "350": ("🇬🇮", "Gibraltar"),
+        "352": ("🇱🇺", "Luxembourg"),
+        "354": ("🇮🇸", "Iceland"),
+        "355": ("🇦🇱", "Albania"),
+        "356": ("🇲🇹", "Malta"),
+        "357": ("🇨🇾", "Cyprus"),
+        "359": ("🇧🇬", "Bulgaria"),
+        "421": ("🇸🇰", "Slovakia"),
+        "420": ("🇨🇿", "Czech Republic"),
+        "298": ("🇫🇴", "Faroe Islands"),
+        "299": ("🇬🇱", "Greenland"),
+        "1": ("🇺🇸", "United States"),
+        "7": ("🇷🇺", "Russia"),
+        "91": ("🇮🇳", "India"),
+        "92": ("🇵🇰", "Pakistan"),
+        "880": ("🇧🇩", "Bangladesh"),
+        "86": ("🇨🇳", "China"),
+        "81": ("🇯🇵", "Japan"),
+        "82": ("🇰🇷", "South Korea"),
+        "84": ("🇻🇳", "Vietnam"),
+        "66": ("🇹🇭", "Thailand"),
+        "62": ("🇮🇩", "Indonesia"),
+        "60": ("🇲🇾", "Malaysia"),
+        "65": ("🇸🇬", "Singapore"),
+        "63": ("🇵🇭", "Philippines"),
+        "95": ("🇲🇲", "Myanmar"),
+        "94": ("🇱🇰", "Sri Lanka"),
+        "977": ("🇳🇵", "Nepal"),
+        "93": ("🇦🇫", "Afghanistan"),
+        "98": ("🇮🇷", "Iran"),
+        "90": ("🇹🇷", "Turkey"),
+        "964": ("🇮🇶", "Iraq"),
+        "963": ("🇸🇾", "Syria"),
+        "961": ("🇱🇧", "Lebanon"),
+        "962": ("🇯🇴", "Jordan"),
+        "965": ("🇰🇼", "Kuwait"),
+        "966": ("🇸🇦", "Saudi Arabia"),
+        "967": ("🇾🇪", "Yemen"),
+        "968": ("🇴🇲", "Oman"),
+        "971": ("🇦🇪", "United Arab Emirates"),
+        "972": ("🇮🇱", "Israel"),
+        "973": ("🇧🇭", "Bahrain"),
+        "974": ("🇶🇦", "Qatar"),
+        "994": ("🇦🇿", "Azerbaijan"),
+        "995": ("🇬🇪", "Georgia"),
+        "996": ("🇰🇬", "Kyrgyzstan"),
+        "992": ("🇹🇯", "Tajikistan"),
+        "993": ("🇹🇲", "Turkmenistan"),
+        "998": ("🇺🇿", "Uzbekistan"),
+        "855": ("🇰🇭", "Cambodia"),
+        "856": ("🇱🇦", "Laos"),
+        "976": ("🇲🇳", "Mongolia"),
+        "850": ("🇰🇵", "North Korea"),
+        "55": ("🇧🇷", "Brazil"),
+        "52": ("🇲🇽", "Mexico"),
+        "54": ("🇦🇷", "Argentina"),
+        "57": ("🇨🇴", "Colombia"),
+        "51": ("🇵🇪", "Peru"),
+        "58": ("🇻🇪", "Venezuela"),
+        "56": ("🇨🇱", "Chile"),
+        "593": ("🇪🇨", "Ecuador"),
+        "591": ("🇧🇴", "Bolivia"),
+        "595": ("🇵🇾", "Paraguay"),
+        "598": ("🇺🇾", "Uruguay"),
+        "502": ("🇬🇹", "Guatemala"),
+        "503": ("🇸🇻", "El Salvador"),
+        "504": ("🇭🇳", "Honduras"),
+        "506": ("🇨🇷", "Costa Rica"),
+        "507": ("🇵🇦", "Panama"),
+        "509": ("🇭🇹", "Haiti"),
+        "501": ("🇧🇿", "Belize"),
+        "61": ("🇦🇺", "Australia"),
+        "64": ("🇳🇿", "New Zealand"),
+        "675": ("🇵🇬", "Papua New Guinea"),
+        "679": ("🇫🇯", "Fiji"),
+        "1246": ("🇧🇧", "Barbados"),
+        "1876": ("🇯🇲", "Jamaica"),
+        "53": ("🇨🇺", "Cuba"),
+        "592": ("🇬🇾", "Guyana"),
+    }
+
+    clean_num = str(number).replace('+', '').replace(' ', '').replace('-', '').strip()
+    sorted_prefixes = sorted(country_map.keys(), key=len, reverse=True)
+
+    for prefix in sorted_prefixes:
+        if clean_num.startswith(prefix):
+            return country_map[prefix]
+
+    return ("🌍", "Unknown")
+
+# ==================== SERVICE DETECTION SECTION ====================
+
+def detect_service(full_sms):
+    if not full_sms:
+        return "SMS SERVICE"
+
+    sms_lower = full_sms.lower()
+
+    service_keywords = {
+        "facebook": "FACEBOOK", "fb": "FACEBOOK",
+        "instagram": "INSTAGRAM", "insta": "INSTAGRAM",
+        "tiktok": "TIKTOK",
+        "twitter": "TWITTER", "x.com": "TWITTER",
+        "snapchat": "SNAPCHAT", "snap": "SNAPCHAT",
+        "whatsapp": "WHATSAPP",
+        "telegram": "TELEGRAM",
+        "discord": "DISCORD",
+        "messenger": "MESSENGER",
+        "linkedin": "LINKEDIN",
+        "google": "GOOGLE", "gmail": "GOOGLE",
+        "amazon": "AMAZON",
+        "microsoft": "MICROSOFT", "outlook": "MICROSOFT",
+        "yahoo": "YAHOO",
+        "paypal": "PAYPAL",
+        "binance": "BINANCE",
+        "coinbase": "COINBASE",
+        "spotify": "SPOTIFY",
+        "netflix": "NETFLIX",
+        "uber": "UBER",
+        "apple": "APPLE", "icloud": "APPLE",
+        "bkash": "BKASH",
+        "nagad": "NAGAD",
+        "stripe": "STRIPE",
+        "line": "LINE",
+        "wechat": "WECHAT",
+        "viber": "VIBER",
+        "signal": "SIGNAL",
+        "pubg": "PUBG",
+        "free fire": "FREE FIRE",
+    }
+
+    for keyword, service_name in sorted(service_keywords.items(), key=lambda x: len(x[0]), reverse=True):
+        if keyword in sms_lower:
+            return service_name
+
+    return "SMS SERVICE"
+
+# ==================== KEYBOARDS SECTION ====================
+# GET 2FA and SEARCH OTP button positions were swapped
+
+from telegram import KeyboardButton, ReplyKeyboardMarkup
+
+def main_keyboard(user_id):
+    keyboard = [
+        [
+            KeyboardButton(
+                text=tr(user_id, "btn_get_number"),
+                style="success"
+            )
+        ]
+    ]
+
+    # All the optional/toggleable buttons are collected into one flat list
+    # (in display order) and then packed two-per-row. This way, if one
+    # button in what used to be a "pair" is disabled from MANAGE BUTTONS,
+    # the other one doesn't end up alone in a full-width row — it just
+    # shifts up and pairs with the next enabled button in the list.
+    optional_buttons = []
+
+    if is_button_enabled("btn_search_otp"):
+        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_search_otp"), style="primary"))
+    if is_button_enabled("btn_2fa"):
+        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_2fa"), style="danger"))
+
+    optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_balance"), style="success"))
+    optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_refer"), style="primary"))
+
+    if is_button_enabled("btn_profile"):
+        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_profile"), style="primary"))
+    if is_button_enabled("btn_leaderboard"):
+        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_leaderboard"), style="danger"))
+    if is_button_enabled("btn_support"):
+        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_support"), style="primary"))
+    if is_button_enabled("btn_traffic"):
+        optional_buttons.append(KeyboardButton(text=tr(user_id, "btn_traffic"), style="success"))
+
+    for i in range(0, len(optional_buttons), 2):
+        keyboard.append(optional_buttons[i:i + 2])
+
+    if is_admin(user_id):
+        keyboard.append([
+            KeyboardButton(
+                text=tr(user_id, "btn_admin_panel"),
+                style="danger"
+            )
+        ])
+
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True
+    )
+
+def cancel_keyboard():
+    keyboard = [[KeyboardButton("❌ CANCEL", style="danger")]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def admin_main_keyboard():
+    keyboard = [
+        [KeyboardButton("👥 USER MANAGEMENT", style="success"), KeyboardButton("💳 PAYMENT SETUP", style="success")],
+        [KeyboardButton("⚙️ SYSTEM CONFIGURATION", style="success")],
+        [KeyboardButton("🔙 BACK TO MAIN", style="danger")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def user_management_keyboard():
+    keyboard = [
+        [KeyboardButton("📢 BROADCAST", style="success"), KeyboardButton("🆔 ALL USER ID", style="primary")],
+        [KeyboardButton("📜 BAN USER LIST", style="primary"), KeyboardButton("💰 ALL USER BALANCE", style="primary")],
+        [KeyboardButton("🔙 BACK TO ADMIN", style="danger")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def system_config_keyboard():
+    keyboard = [
+        [KeyboardButton("📈 TODAY ALL STATUS", style="success"), KeyboardButton("👤 USER STATUS CHECK", style="success")],
+        [KeyboardButton("⛔ BAN USER", style="danger"), KeyboardButton("🔓 UNBAN USER", style="primary")],
+        [KeyboardButton("📜 BAN USER LIST", style="primary"), KeyboardButton("💱 OTP RATE", style="primary")],
+        [KeyboardButton("➖ REMOVE BALANCE", style="danger"), KeyboardButton("➕ ADD BALANCE", style="success")],
+        [KeyboardButton("📡 MANAGE SERVICES", style="primary"), KeyboardButton("🔘 MANAGE BUTTONS", style="primary")],
+        [KeyboardButton("🔢 NUMBER MANAGE", style="primary"), KeyboardButton("🎁 REFER CONTROL", style="primary")],
+        [KeyboardButton("🔙 BACK TO ADMIN", style="danger")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def withdraw_method_keyboard():
+    flags = get_payment_flags()
+    styles = {"pm_bkash": "success", "pm_nagad": "success", "pm_rocket": "primary", "pm_binance": "primary"}
+    buttons = [
+        KeyboardButton(PAYMENT_METHOD_LABELS[key], style=styles[key])
+        for key in ("pm_bkash", "pm_nagad", "pm_rocket", "pm_binance")
+        if flags.get(key, True)
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([KeyboardButton("❌ CANCEL", style="danger")])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+# ==================== HELPER FUNCTIONS SECTION ====================
+
+def format_balance(balance):
+    return f"{balance:.2f}"
+
+def extract_otp(text):
+    if not text or text == "No Content":
+        return "N/A"
+    spaced_otp = re.search(r'\b(\d{3}\s\d{3})\b', text)
+    if spaced_otp:
+        return spaced_otp.group(1).replace(" ", "")
+    match = re.search(r'\b(\d{4,8})\b', text)
+    return match.group(1) if match else "N/A"
+
+def normalize_number(num):
+    return re.sub(r'\D', '', str(num))
 
 def mask_number(num):
-    digits = re.sub(r'\D', '', str(num))
-    if len(digits) <= 6:
-        return str(num)
-    if len(digits) >= 11:
-        return digits[:2] + "••••••" + digits[-3:]
-    return digits[:2] + "•••" + digits[-2:]
+    if len(num) > 6:
+        return f"{num[:4]}****{num[-6:]}"
+    return num
 
-def detect_service(text, source_addr=None):
-    if not text:
-        return "Unknown 🌐"
-    t_low = text.lower()
-    source_lower = source_addr.lower() if source_addr else ""
-    services = {
-        "whatsapp": "<tg-emoji emoji-id='5188683998125106802'>📞</tg-emoji>",
-        "واتساب": "WS", "واتس": "WS", "facebook": "FB", "فيسبوك": "FB",
-        "instagram": "IG", "انستقرام": "IG",
-        "telegram": "<tg-emoji emoji-id='5471949924658588235'>👉</tg-emoji>",
-        "تيليجرام": "<tg-emoji emoji-id='5471949924658588235'>👉</tg-emoji>",
-        "tiktok": "TK", "google": "GG", "gmail": "GG"
+def get_date_reset_time():
+    now = datetime.now()
+    today_midnight = datetime(now.year, now.month, now.day, 0, 0, 0)
+    return today_midnight
+
+def is_valid_bangladesh_number(number):
+    number = re.sub(r'\D', '', str(number))
+    return len(number) == 11 and number.startswith('01')
+
+def is_valid_binance_id(binance_id):
+    """Binance Pay ID / UID is a plain numeric identifier (not a phone number) —
+    typically 8-12 digits, but we accept 6-15 to be safe across account types."""
+    binance_id = re.sub(r'\D', '', str(binance_id))
+    return 6 <= len(binance_id) <= 15
+
+def is_range_request(param):
+    return 'X' in param.upper()
+
+def is_referral_request(param):
+    return param.isdigit()
+
+# ==================== DATABASE FUNCTIONS SECTION ====================
+# load_data/save_data are now defined above (work with the unified database)
+
+# Serializes all read-modify-write balance operations so concurrent OTP credits,
+# withdraws, and admin add/remove-balance actions can't overwrite each other.
+balance_lock = asyncio.Lock()
+
+def get_user(uid):
+    uid = str(uid)
+    data = load_data()
+    if uid not in data:
+        data[uid] = {"user_id": uid, "balance": 0.0, "total_numbers": 0, "referral_count": 0}
+        save_data(data)
+    return data[uid]
+
+async def update_db_balance(uid, amount):
+    uid = str(uid)
+    async with balance_lock:
+        data = load_data()
+        if uid not in data:
+            data[uid] = {"user_id": uid, "balance": 0.0, "total_numbers": 0, "referral_count": 0}
+        data[uid]["balance"] = round(data[uid].get("balance", 0.0) + amount, 2)
+        save_data(data)
+        return data[uid]["balance"]
+
+async def try_deduct_balance(uid, amount):
+    """Atomically deduct `amount` from uid's balance only if funds are sufficient.
+    Returns the new balance on success, or None if the balance was too low
+    (prevents two concurrent withdraws from both passing an earlier balance check)."""
+    uid = str(uid)
+    async with balance_lock:
+        data = load_data()
+        if uid not in data:
+            data[uid] = {"user_id": uid, "balance": 0.0, "total_numbers": 0, "referral_count": 0}
+        current = data[uid].get("balance", 0.0)
+        if current < amount:
+            return None
+        data[uid]["balance"] = round(current - amount, 2)
+        save_data(data)
+        return data[uid]["balance"]
+
+# Serializes "is this OTP already paid?" checks so the auto-monitor and a manual
+# SEARCH OTP request can never both see "not yet paid" for the same OTP and both
+# credit it — balance is only ever added once per real OTP, no matter which path
+# notices it first.
+otp_credit_lock = asyncio.Lock()
+
+async def credit_otp_if_new(sms_key, uid, otp_code=None):
+    """Atomically marks sms_key as paid and credits OTP_RATE to uid, but only the
+    first time this sms_key is seen. Returns True if this call actually credited
+    it, False if it was already paid out (by any code path) — so callers never
+    double-pay or double-notify for the same OTP."""
+    uid = str(uid)
+    async with otp_credit_lock:
+        paid_data = load_data(PAID_SMS_FILE)
+        if sms_key in paid_data:
+            return False
+        paid_data[sms_key] = {"uid": uid, "otp": otp_code}
+        save_data(paid_data, PAID_SMS_FILE)
+    await update_db_balance(uid, get_otp_rate())
+    add_otp_received(uid)
+    try:
+        if is_ref_commission_on():
+            ref = load_data(USER_DATA_FILE).get(uid, {}).get("referred_by")
+            comm = calc_ref_commission()
+            if ref and comm > 0 and not is_user_banned(ref):
+                await update_db_balance(ref, comm)
+                add_referral_earning(ref, comm)
+    except Exception as e:
+        print(f"Referral commission error: {e}")
+    return True
+
+def get_all_users():
+    data = load_data(USER_DATA_FILE)
+    return list(data.keys()) if data else []
+
+def user_exists(uid):
+    data = load_data(USER_DATA_FILE)
+    return str(uid) in data
+
+# ==================== STATS FUNCTIONS SECTION ====================
+
+def load_stats():
+    return load_data(STATS_FILE)
+
+def save_stats(stats):
+    save_data(stats, STATS_FILE)
+
+def add_number_taken(uid, count=1):
+    uid = str(uid)
+    stats = load_stats()
+    if uid not in stats:
+        stats[uid] = {"numbers_taken": [], "otps_received": []}
+    now = datetime.now().isoformat()
+    for _ in range(count):
+        stats[uid]["numbers_taken"].append(now)
+    log_global_activity(uid, "NUMBER_TAKEN", {"count": count})
+    save_stats(stats)
+
+def add_otp_received(uid):
+    uid = str(uid)
+    stats = load_stats()
+    if uid not in stats:
+        stats[uid] = {"numbers_taken": [], "otps_received": []}
+    stats[uid]["otps_received"].append(datetime.now().isoformat())
+    save_stats(stats)
+
+def get_user_stats(uid):
+    uid = str(uid)
+    stats = load_stats()
+    user_stats = stats.get(uid, {"numbers_taken": [], "otps_received": []})
+
+    now = datetime.now()
+    today_midnight = get_date_reset_time()
+    last_24h = now - timedelta(hours=24)
+    last_7d = now - timedelta(days=7)
+
+    numbers_taken = user_stats.get("numbers_taken", [])
+    otps_received = user_stats.get("otps_received", [])
+
+    today_numbers = sum(1 for t in numbers_taken if datetime.fromisoformat(t) >= today_midnight)
+    today_otps = sum(1 for t in otps_received if datetime.fromisoformat(t) >= today_midnight)
+    last24h_numbers = sum(1 for t in numbers_taken if datetime.fromisoformat(t) > last_24h)
+    last24h_otps = sum(1 for t in otps_received if datetime.fromisoformat(t) > last_24h)
+    last7d_numbers = sum(1 for t in numbers_taken if datetime.fromisoformat(t) > last_7d)
+    last7d_otps = sum(1 for t in otps_received if datetime.fromisoformat(t) > last_7d)
+    total_numbers = len(numbers_taken)
+    total_otps = len(otps_received)
+
+    return {
+        "total_numbers": total_numbers, "total_otps": total_otps,
+        "today_numbers": today_numbers, "today_otps": today_otps,
+        "last24h_numbers": last24h_numbers, "last24h_otps": last24h_otps,
+        "last7d_numbers": last7d_numbers, "last7d_otps": last7d_otps
     }
-    for k, v in services.items():
-        if k in t_low or k in source_lower:
-            return v
-    if source_addr and source_addr.strip():
-        cleaned = source_addr.replace('#', '').strip()
-        if cleaned:
-            return cleaned.upper()
-    return "Unknown 🌐"
 
-def format_otp_message_v2(number, sms_text, service_name="[TG]", otp_code=None, is_group=False):
-    _, flag, region_code = detect_country_from_number(number)
-    masked = mask_number(number)
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    header = f"──────────────╖ \n↠ {flag} #{region_code} {service_name} {masked} ┨<tg-emoji emoji-id='6084757039567868626'>👆</tg-emoji>\n──────────────╛"
-    body = f"<blockquote><tg-emoji emoji-id='5971844011508372946'>☠</tg-emoji>{sms_text}</blockquote>"
-    time_footer = f"<blockquote>• <tg-emoji emoji-id='5413704112220949842'>⏰</tg-emoji> ~ {now_str}</blockquote>"
-    return f"{header}\n{body}\n{time_footer}"
+def log_global_activity(uid, action, details):
+    """Activity log is disabled: nothing is written to any file or database."""
+    return
 
-def create_group_otp_keyboard(otp_code=None):
-    otp_buttons = load_otp_buttons()
-    markup = InlineKeyboardMarkup(row_width=2)
-    if otp_code and otp_code != "N/A":
-        markup.add(InlineKeyboardButton(text=f"🔑 {otp_code}", callback_data=f"copy_{otp_code}"))
-    if otp_buttons:
-        row_buttons = [InlineKeyboardButton(text=btn["name"], url=btn["url"]) for btn in otp_buttons]
-        for i in range(0, len(row_buttons), 2):
-            markup.add(*row_buttons[i:i+2])
-    markup.add(InlineKeyboardButton(text="𝗗𝗘𝗩𝗘𝗟𝗢𝗣𝗘𝗥", url="https://t.me/alorhawa"))
-    return markup
+def get_global_system_stats():
+    stats = load_stats()
+    now = datetime.now()
+    today_midnight = datetime(now.year, now.month, now.day)
+    last_7d = now - timedelta(days=7)
+    total_n = total_o = today_n = today_o = seven_n = seven_o = 0
+    for uid in stats:
+        u = stats[uid]
+        n_list = u.get("numbers_taken", [])
+        o_list = u.get("otps_received", [])
+        total_n += len(n_list)
+        total_o += len(o_list)
+        for t in n_list:
+            dt = datetime.fromisoformat(t)
+            if dt >= today_midnight: today_n += 1
+            if dt >= last_7d: seven_n += 1
+        for t in o_list:
+            dt = datetime.fromisoformat(t)
+            if dt >= today_midnight: today_o += 1
+            if dt >= last_7d: seven_o += 1
+    return today_n, today_o, seven_n, seven_o, total_n, total_o
 
-def auto_delete_message(chat_id, message_id, delay=300):
-    def delete():
-        time.sleep(delay)
-        try:
-            bot.delete_message(chat_id, message_id)
-        except Exception:
-            pass
-    threading.Thread(target=delete, daemon=True).start()
+# ==================== LEADERBOARD SECTION ====================
 
-def normalize_number(number):
-    return re.sub(r'\D', '', str(number)) if number else ""
+async def remember_user_name(user):
+    """Keep the user's Telegram name/username in their record (used by the leaderboard)."""
+    try:
+        uid_str = str(user.id)
+        full = (user.full_name or "").strip()
+        uname = user.username or ""
+        async with balance_lock:
+            data = load_data(USER_DATA_FILE)
+            rec = data.get(uid_str)
+            if rec is not None and (rec.get("full_name") != full or rec.get("username") != uname):
+                rec["full_name"] = full
+                rec["username"] = uname
+                save_data(data)
+    except Exception as e:
+        print(f"remember_user_name error: {e}")
 
-def send_otp_to_user(number, otp_message, full_number, group_message=None, otp_code=None):
-    normalized_incoming = normalize_number(number)
-    for user_id_str, user_data in list(USERS.items()):
-        selected_num = user_data.get("selected_number")
-        if not selected_num:
-            continue
-        normalized_selected = normalize_number(selected_num)
-        if (normalized_incoming == normalized_selected or normalized_incoming.endswith(normalized_selected) or normalized_selected.endswith(normalized_incoming) or full_number == selected_num):
-            try:
-                bot.send_message(int(user_id_str), otp_message, parse_mode="HTML")
-                USERS[user_id_str]["activations"] = USERS[user_id_str].get("activations", 0) + 1
-                save_users()
-                add_code_bonus(int(user_id_str))
-            except Exception as e:
-                print(f"❌ خطأ إرسال للمستخدم {user_id_str}: {e}", flush=True)
-
-    update_statistics()
-    msg_to_group = group_message if group_message else otp_message
-    group_keyboard = create_group_otp_keyboard(otp_code)
-    sent_groups = set()
-    if OTP_GROUP and OTP_GROUP not in sent_groups:
-        try:
-            m = bot.send_message(OTP_GROUP, msg_to_group, parse_mode="HTML", disable_web_page_preview=True, reply_markup=group_keyboard)
-            auto_delete_message(OTP_GROUP, m.message_id)
-            sent_groups.add(OTP_GROUP)
-        except Exception as e:
-            print(f"❌ خطأ إرسال لمجموعة OTP: {e}", flush=True)
-    for gid in list(GROUPS):
-        if gid not in sent_groups:
-            try:
-                m = bot.send_message(gid, msg_to_group, parse_mode="HTML", disable_web_page_preview=True, reply_markup=group_keyboard)
-                auto_delete_message(gid, m.message_id)
-                sent_groups.add(gid)
-            except Exception as e:
-                print(f"❌ خطأ إرسال لمجموعة {gid}: {e}", flush=True)
-
-def get_platforms_list(user_id=None):
-    platform_stats = {}
-    for _, info in COUNTRIES.items():
-        count = info.get("numbers_count", 0)
-        for p in info.get("platforms", []):
-            platform_stats[p] = platform_stats.get(p, 0) + count
-    platform_icons = {"Facebook": "📘 Facebook", "WhatsApp": "💬 WhatsApp", "Telegram": "✈️ Telegram", "Instagram": "📸 Instagram", "Twitter": "🐦 Twitter/X", "TikTok": "📱 TikTok", "Discord": "🎮 Discord", "Gmail": "📧 Gmail"}
-    markup = InlineKeyboardMarkup(row_width=1)
-    for platform, count in platform_stats.items():
-        if count > 0:
-            markup.add(InlineKeyboardButton(f"{platform_icons.get(platform, platform)} ({count})", callback_data=f"select_plt_{platform}"))
-    return markup
-
-def get_countries_for_platform(platform, user_id=None):
-    lang = get_user_language(user_id)
-    markup = InlineKeyboardMarkup(row_width=1)
-    for cid, info in COUNTRIES.items():
-        if platform in info.get("platforms", []):
-            label = f"{info.get('flag', '🌍')} {info.get('display_name', cid)}"
-            if info.get("code"):
-                label += f" (+{info['code']})"
-            markup.add(InlineKeyboardButton(f"{label} ({info.get('numbers_count', 0)})", callback_data=f"country_{cid}"))
-    markup.add(InlineKeyboardButton("🔙 رجوع" if lang == "ar" else "🔙 Back", callback_data="choose_country"))
-    return markup
-
-def get_random_number(country_name):
-    if country_name not in COUNTRIES:
-        return None
-    filename = COUNTRIES[country_name].get("file", "")
-    if not filename or not os.path.exists(filename):
-        return None
-    with open(filename, "r", encoding="utf-8") as f:
-        numbers = [line.strip() for line in f if line.strip()]
-    return random.choice(numbers) if numbers else None
-
-def get_admin_menu():
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(InlineKeyboardButton("⚙️ إعدادات المواقع", callback_data="admin_sites_menu"), InlineKeyboardButton("👥 إدارة الحسابات", callback_data="admin_accounts_menu"))
-    markup.add(InlineKeyboardButton("➕ إضافة دولة", callback_data="admin_add_country"), InlineKeyboardButton("➖ حذف دولة", callback_data="admin_remove_country"))
-    markup.add(InlineKeyboardButton("📋 الدول المتاحة", callback_data="admin_list_countries"), InlineKeyboardButton("📢 إضافة قناة", callback_data="admin_add_channel"))
-    markup.add(InlineKeyboardButton("🗑 حذف قناة", callback_data="admin_remove_channel"), InlineKeyboardButton("📱 إدارة الجروبات", callback_data="admin_groups_menu"))
-    markup.add(InlineKeyboardButton("📈 الإحصائيات", callback_data="admin_statistics"), InlineKeyboardButton("📣 إذاعة", callback_data="admin_broadcast_menu"))
-    markup.add(InlineKeyboardButton("🔧 إضافة مشرف", callback_data="admin_add_admin"), InlineKeyboardButton("🗑 حذف مشرف", callback_data="admin_remove_admin"))
-    markup.add(InlineKeyboardButton("🚫 حظر مستخدم", callback_data="admin_ban_user"), InlineKeyboardButton("✅ إلغاء حظر", callback_data="admin_unban_user"))
-    markup.add(InlineKeyboardButton("💰 نظام الإحالات", callback_data="admin_referral_settings"), InlineKeyboardButton("🔗 روابط الأزرار", callback_data="admin_button_links"))
-    markup.add(InlineKeyboardButton("📥 إنشاء نسخة احتياطية", callback_data="admin_create_backup"), InlineKeyboardButton("🔙 رجوع", callback_data="back_to_main"))
-    return markup
-
-def get_sites_menu():
-    markup = InlineKeyboardMarkup(row_width=2)
-    for k, v in SETTINGS.items():
-        markup.add(InlineKeyboardButton(v.get("name", k), callback_data=f"site_config_{k}"))
-    markup.add(InlineKeyboardButton("🔙 رجوع للوحة الأدمن", callback_data="admin"))
-    return markup
-
-def get_site_config_menu(site_key, account_id=None):
-    short_id = account_id[:8] if account_id else ""
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(InlineKeyboardButton("👤 تغيير اليوزر", callback_data=f"site_change_user_{site_key}_{short_id}"), InlineKeyboardButton("🔑 تغيير الباسورد", callback_data=f"site_change_pass_{site_key}_{short_id}"))
-    markup.add(InlineKeyboardButton("⏱ فترة البحث", callback_data=f"site_change_interval_{site_key}"), InlineKeyboardButton("⏳ وقت الانتظار", callback_data=f"site_change_timeout_{site_key}"))
-    markup.add(InlineKeyboardButton("🔓 اختبار تسجيل الدخول", callback_data=f"site_test_login_{site_key}_{short_id}"), InlineKeyboardButton("📥 اختبار جلب كود", callback_data=f"site_test_fetch_{site_key}_{short_id}"))
-    markup.add(InlineKeyboardButton("🔙 رجوع لقائمة المواقع", callback_data="admin_sites_menu"))
-    return markup
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("copy_"))
-def handle_copy_callback(call):
-    bot.answer_callback_query(call.id, call.data.split("_", 1)[1], show_alert=True)
-
-@bot.message_handler(commands=["start"])
-def start(msg):
-    user_id = msg.from_user.id
-    if is_banned(user_id):
-        bot.reply_to(msg, t(user_id, "banned"))
+async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if is_user_banned(uid):
+        await update.message.reply_text(tr(uid, "banned"), reply_markup=main_keyboard(uid))
         return
-    if str(user_id) not in USERS:
-        USERS[str(user_id)] = {"selected_country": None, "selected_number": None, "language": "ar", "join_date": datetime.now().strftime('%Y-%m-%d'), "activations": 0}
-        save_users()
-    if is_admin(user_id):
-        bot.send_message(msg.chat.id, "🎛 <b>لوحة الإدارة</b>\n\nاختر الإجراء المطلوب:", parse_mode="HTML", reply_markup=get_admin_menu())
-        return
-    markup = get_platforms_list(user_id)
-    if markup:
-        bot.send_message(msg.chat.id, "🚨 <b>اختر المنصة</b>", parse_mode="HTML", reply_markup=markup)
+
+    stats_data = load_stats()
+    today_midnight = get_date_reset_time()
+    user_data_all = load_data(USER_DATA_FILE)
+
+    user_today_counts = []
+
+    for uid_str, user_stats in stats_data.items():
+        otps_received = user_stats.get("otps_received", [])
+        today_count = 0
+        for ts in otps_received:
+            try:
+                dt = datetime.fromisoformat(ts)
+                if dt >= today_midnight:
+                    today_count += 1
+            except:
+                continue
+        if today_count > 0:
+            name = (user_data_all.get(uid_str, {}).get("full_name") or "").strip()
+            if not name:
+                name = (user_data_all.get(uid_str, {}).get("username") or "").strip()
+            if not name:
+                name = "Unknown User"
+            user_today_counts.append((uid_str, today_count, html.escape(name[:25])))
+
+    user_today_counts.sort(key=lambda x: x[1], reverse=True)
+    top10 = user_today_counts[:10]
+
+    if not top10:
+        msg = (
+            "<b>🏆 TOP 10 OTP LEADERBOARD 🏆</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "❌ No one has received an OTP today yet.\n"
+        )
     else:
-        bot.send_message(msg.chat.id, t(user_id, "welcome"), parse_mode="HTML")
-
-@bot.callback_query_handler(func=lambda call: call.data in ("admin", "admin_panel"))
-def admin_cb(call):
-    if is_admin(call.from_user.id):
-        bot.edit_message_text("🎛 <b>لوحة الإدارة</b>", call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=get_admin_menu())
-
-@bot.callback_query_handler(func=lambda call: call.data == "admin_sites_menu")
-def sites_menu_cb(call):
-    if is_admin(call.from_user.id):
-        bot.edit_message_text("⚙️ <b>إعدادات المواقع</b>", call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=get_sites_menu())
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("site_config_"))
-def site_config_cb(call):
-    if not is_admin(call.from_user.id):
-        return
-    site_key = call.data.replace("site_config_", "")
-    if site_key not in SETTINGS:
-        return
-    acc = get_first_account(site_key)
-    bot.edit_message_text(f"⚙️ <b>إعدادات {SETTINGS[site_key]['name']}</b>\n👤 <code>{acc.get('username', 'N/A')}</code>", call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=get_site_config_menu(site_key, acc.get("id", "")))
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith(("site_change_user_", "site_change_pass_", "site_test_login_", "site_test_fetch_")))
-def fixed_site_actions(call):
-    user_id = call.from_user.id
-    if not is_admin(user_id):
-        return
-    data = call.data
-    for prefix in ("site_change_user_", "site_change_pass_", "site_test_login_", "site_test_fetch_"):
-        if data.startswith(prefix):
-            rest = data[len(prefix):]
-            site_key = next((k for k in SETTINGS if rest == k or rest.startswith(k + "_")), rest.rsplit("_", 1)[0])
-            acc_id = rest[len(site_key) + 1:] if rest.startswith(site_key + "_") else ""
-            account = get_account_by_id(site_key, acc_id)
-            if not account:
-                bot.answer_callback_query(call.id, "❌ الحساب غير موجود", show_alert=True)
-                return
-            if prefix == "site_change_user_":
-                user_states[user_id] = {"action": "change_site_username", "site_key": site_key, "account_id": account["id"]}
-                bot.send_message(call.message.chat.id, f"👤 أرسل اليوزر الجديد لـ {site_key}:")
-            elif prefix == "site_change_pass_":
-                user_states[user_id] = {"action": "change_site_password", "site_key": site_key, "account_id": account["id"]}
-                bot.send_message(call.message.chat.id, f"🔑 أرسل الباسورد الجديد لـ {site_key}:")
+        msg = (
+            "<b>🏆 TOP 10 OTP RECEIVERS (TODAY) 🏆</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+        )
+        for idx, (uid_str, count, name) in enumerate(top10, 1):
+            if idx == 1:
+                medal = "🥇"
+            elif idx == 2:
+                medal = "🥈"
+            elif idx == 3:
+                medal = "🥉"
             else:
-                bot.answer_callback_query(call.id, "✅ جاري الفحص")
-                bot.send_message(call.message.chat.id, f"✅ الحساب <code>{account.get('username', 'Token')}</code> في <b>{site_key}</b> نشط.", parse_mode="HTML")
+                medal = f"{idx}️⃣"
+            msg += f"{medal} <b>{name}</b>\n   🔑 <code>{count}</code> OTPs\n\n"
+        msg += (
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "📊 <i>Resets daily at 12 AM</i>"
+        )
+
+    await update.message.reply_text(msg, parse_mode="HTML", reply_markup=main_keyboard(uid))
+
+# ==================== TRAFFIC SECTION ====================
+# Shows the 10 ranges receiving the most OTPs on the panel (the panel itself decides
+# how far back its list goes and when it resets), with the service seen most on each range.
+
+_TRAFFIC_EXTRA = {
+    "imo": "IMO", "chatgpt": "CHATGPT", "openai": "OPENAI", "tinder": "TINDER", "bumble": "BUMBLE",
+    "grab": "GRAB", "foodpanda": "FOODPANDA", "shopee": "SHOPEE", "lazada": "LAZADA", "temu": "TEMU",
+    "aliexpress": "ALIEXPRESS", "alibaba": "ALIBABA", "airbnb": "AIRBNB", "booking": "BOOKING",
+    "steam": "STEAM", "roblox": "ROBLOX", "garena": "GARENA", "truecaller": "TRUECALLER",
+    "skype": "SKYPE", "zoom": "ZOOM", "dropbox": "DROPBOX", "paytm": "PAYTM", "phonepe": "PHONEPE",
+    "gcash": "GCASH", "payoneer": "PAYONEER", "okx": "OKX", "bybit": "BYBIT", "kucoin": "KUCOIN",
+    "bitget": "BITGET", "mexc": "MEXC", "huawei": "HUAWEI", "samsung": "SAMSUNG", "vk": "VK",
+    "yandex": "YANDEX", "kakao": "KAKAO", "naver": "NAVER", "zalo": "ZALO", "likee": "LIKEE",
+    "bigo": "BIGO", "botim": "BOTIM", "ebay": "EBAY", "shein": "SHEIN", "hotmail": "MICROSOFT",
+    "twitter": "TWITTER", "tiktok": "TIKTOK", "facebook": "FACEBOOK", "instagram": "INSTAGRAM",
+    "whatsapp": "WHATSAPP", "telegram": "TELEGRAM", "google": "GOOGLE", "snapchat": "SNAPCHAT",
+}
+
+def _traffic_service(o, sms):
+    """Best-effort service name for one OTP: panel field -> known keywords -> brand found in the SMS."""
+    for k in ("service", "app", "app_name", "sid", "platform", "cli", "sender"):
+        v = o.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip().upper()
+    name = detect_service(sms)
+    if name and name != "SMS SERVICE":
+        return name
+    low = (sms or "").lower()
+    for kw, nm in sorted(_TRAFFIC_EXTRA.items(), key=lambda x: len(x[0]), reverse=True):
+        if re.search(r"(?<![a-z0-9])" + re.escape(kw) + r"(?![a-z0-9])", low):
+            return nm
+    for pat in (r"\[([^\]]{2,20})\]",
+                r"(?:your|use|enter)\s+([A-Za-z][A-Za-z0-9]{1,15})\s+(?:verification|confirmation|security|login|log-in|code|otp|pin)",
+                r"^\W*([A-Za-z][A-Za-z0-9]{1,15})\s+(?:verification|confirmation|security|login|code|otp)",
+                r"([A-Za-z][A-Za-z0-9]{1,15})\s+is your"):
+        m = re.search(pat, sms or "", re.I)
+        if m and not m.group(1).strip().isdigit() and m.group(1).strip().lower() not in ("your", "the", "this", "verification", "security", "login", "code", "otp", "one", "sms"):
+            return m.group(1).strip().upper()
+    return "OTHER"
+
+async def traffic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if is_user_banned(uid):
+        await update.message.reply_text(tr(uid, "banned"), reply_markup=main_keyboard(uid))
+        return
+
+    try:
+        r = await client_async.get(f"{BASE_URL}/api/success-otp-info")
+        otps = (r.json().get("data") or {}).get("otps") or []
+    except Exception:
+        otps = []
+
+    known = {}
+    for svc in get_cached_services():
+        for rng in svc.get("ranges", []):
+            pre = re.sub(r"\D", "", re.sub(r"[xX]+$", "", str(rng)))
+            if pre:
+                known[pre] = str(rng)
+    prefixes = sorted(known, key=len, reverse=True)
+
+    # platform -> {range -> OTP count}
+    platforms = {}
+    for o in otps:
+        num = normalize_number(o.get("number", ""))
+        if not num:
+            continue
+        rng = next((known[pre] for pre in prefixes if num.startswith(pre)), None)
+        if not rng:
+            rng = (num[:-3] if len(num) > 3 else num) + "XXX"
+        sms = o.get("message") or o.get("otp") or o.get("sms") or ""
+        name = _traffic_service(o, sms)
+        pr = platforms.setdefault(name, {})
+        pr[rng] = pr.get(rng, 0) + 1
+
+    # biggest platform first ("OTHER" always last); each shows its top 3 ranges
+    ordered = sorted(platforms.items(), key=lambda x: (x[0] == "OTHER", -sum(x[1].values())))[:10]
+
+    if not ordered:
+        msg = (
+            "<b>🚦 TRAFFIC 🚦</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "❌ No traffic data available right now.\n"
+        )
+    else:
+        nums = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        head = (
+            "<b>🚦 LIVE RANGE TRAFFIC 🚦</b>\n"
+            "<i>Top 3 ranges of each platform</i>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+        )
+        foot = (
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🕒 <i>Last 1 Hour</i>"
+        )
+        blocks = []
+        for idx, (name, rngs) in enumerate(ordered):
+            top3 = sorted(rngs.items(), key=lambda x: x[1], reverse=True)[:3]
+            best = top3[0][1]
+            lines = []
+            for rng, count in top3:
+                flag, _cname = get_country_info(re.sub(r"\D", "", re.sub(r"[xX]+$", "", rng)))
+                filled = max(1, round(5 * count / best))
+                bar = "▰" * filled + "▱" * (5 - filled)
+                lines.append(f"{flag} <code>{html.escape(rng)}</code> · <b>{count}</b> {bar}")
+            blocks.append(
+                f"{nums[idx]} <b>{html.escape(str(name))}</b> · 🔑 {sum(rngs.values())} OTP\n"
+                f"<blockquote>" + "\n".join(lines) + "</blockquote>\n"
+            )
+        while len(blocks) > 1 and len(head) + sum(len(b_) for b_ in blocks) + len(foot) > 3900:
+            blocks.pop()
+        msg = head + "".join(blocks) + foot
+
+    await update.message.reply_text(msg, parse_mode="HTML", reply_markup=main_keyboard(uid))
+
+# ==================== 2FA CODE GENERATOR SECTION ====================
+
+def generate_2fa_code(secret_key):
+    try:
+        clean_secret = secret_key.replace(" ", "").strip()
+        totp = pyotp.TOTP(clean_secret)
+        otp = totp.now()
+        return otp, clean_secret
+    except:
+        return None, None
+
+async def get_2fa_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if is_user_banned(uid):
+        await update.message.reply_text(tr(uid, "banned"), reply_markup=main_keyboard(uid))
+        return
+    context.user_data["mode"] = "get_2fa"
+    await update.message.reply_text(
+        "⚡ <b>GET 2FA CODE</b> ⚡\n\n"
+        "<blockquote>🔑 ENTER YOUR 2FA SECRET KEY:</blockquote>",
+        parse_mode="HTML"
+    )
+
+async def process_2fa_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    secret_key = update.message.text.strip()
+    context.user_data["mode"] = None
+
+    otp_code, clean_key = generate_2fa_code(secret_key)
+
+    if otp_code is None:
+        await update.message.reply_text(
+            "❌ <b>INVALID 2FA SECRET KEY</b>\n\n⚠️ Please send a valid base32 key.",
+            parse_mode="HTML",
+            reply_markup=main_keyboard(uid)
+        )
+        return
+
+    now = datetime.now()
+    final_msg = (
+        "✅ <b>2FA CODE GENERATED!</b>\n\n"
+        f"<blockquote>🔑 KEY: <code>{clean_key}</code></blockquote>\n"
+        f"<blockquote>🔢 CODE: <code>{otp_code}</code></blockquote>\n"
+        f"<blockquote>⏳ EXPIRES IN: 30 SECONDS</blockquote>\n"
+        f"📅 {now.strftime('%d %B, %Y')} | {now.strftime('%I:%M %p')}"
+    )
+    await update.message.reply_text(final_msg, parse_mode="HTML")
+
+# ==================== GET NUMBER — LIVEACCESS SERVICE SELECTION (FIXED: REMOVED HTML TAGS) ====================
+
+# ── Service list layout ──
+# 2 columns. Each service gets its own icon, the count sits after a dot, and the
+# button colour shows the stock level:  green = many, blue = medium, red = few.
+_SVC_NAME_MAX = 11
+_SVC_HIGH = 10      # this many ranges or more  -> green
+_SVC_MID = 3        # this many ranges or more  -> blue, below that -> red
+
+_SVC_ICONS = {
+    "FACEBOOK": "📘", "INSTAGRAM": "📸", "WHATSAPP": "💬", "TELEGRAM": "✈️",
+    "TIKTOK": "🎵", "IMO": "💙", "TWILIO": "🔔", "BOLT": "⚡", "UBER": "🚕",
+    "DISCORD": "🎮", "TINDER": "🔥", "ALIPAY": "💳", "VERIFY": "✅",
+    "LETZ": "🎯", "GOOGLE": "🔍", "TWITTER": "🐦", "SNAPCHAT": "👻",
+    "PAYPAL": "💰", "AMAZON": "📦", "MICROSOFT": "🪟", "APPLE": "🍎",
+}
+
+def _svc_display_name(sid):
+    name = str(sid).strip().upper()
+    if name.isdigit():                      # a phone number used as a service name
+        name = "+" + name
+        return name[:8] + "…" if len(name) > 8 else name
+    if len(name) > _SVC_NAME_MAX:
+        name = name[:_SVC_NAME_MAX - 1] + "…"
+    return name
+
+def _svc_icon(sid):
+    key = str(sid).strip().upper()
+    if key.isdigit():
+        return "📞"
+    for word, icon in _SVC_ICONS.items():
+        if word in key:
+            return icon
+    return "📱"
+
+def _svc_style(count):
+    if count >= _SVC_HIGH:
+        return "success"
+    if count >= _SVC_MID:
+        return "primary"
+    return "danger"
+
+# ── Which design is live (admin: MANAGE SERVICES → V1 / V2 / V3) ──
+SERVICE_DESIGN_NAMES = {1: "V1 · Classic", 2: "V2 · Icons", 3: "V3 · Bars"}
+DEFAULT_SERVICE_DESIGN = 1
+
+def get_service_design():
+    try:
+        v = int(load_data(SITE_SETTINGS_FILE).get("service_design", DEFAULT_SERVICE_DESIGN))
+    except (TypeError, ValueError):
+        v = DEFAULT_SERVICE_DESIGN
+    return v if v in SERVICE_DESIGN_NAMES else DEFAULT_SERVICE_DESIGN
+
+def set_service_design(v):
+    settings = load_data(SITE_SETTINGS_FILE)
+    settings["service_design"] = int(v)
+    save_data(settings, SITE_SETTINGS_FILE)
+
+def _legend_html():
+    """Small colour/bar guide shown under the GET NUMBER text (V2 and V3 only)."""
+    v = get_service_design()
+    if v == 2:
+        return "\n<i>🟢 Many  🔵 Medium  🔴 Few</i>"
+    if v == 3:
+        return "\n<i>▰▰▰ stock level  ·  🟢 Many  🔵 Medium  🔴 Few</i>"
+    return ""
+
+# ── V1: the original classic layout (rocket icon, count in brackets, colour cycle) ──
+_SVC_STYLES = ["danger", "primary", "success", "danger", "primary", "success",
+               "danger", "primary", "success", "danger", "primary", "success"]
+
+def _build_services_keyboard_v1(services):
+    buttons = []
+    for i, svc in enumerate(services):
+        sid = svc.get("sid", f"Service {i+1}")
+        label = f"🚀 {sid} ({len(svc.get('ranges', []))})"
+        buttons.append(InlineKeyboardButton(label, callback_data=f"svc_{i}", style=_SVC_STYLES[i % len(_SVC_STYLES)]))
+    max_len = max((len(btn.text) for btn in buttons), default=0)
+    cols = 2 if max_len > 14 else 3
+    rows = [buttons[j:j + cols] for j in range(0, len(buttons), cols)]
+    rows.append([InlineKeyboardButton("⚙️ CUSTOM RANGE", callback_data="custom_range", style="danger")])
+    return InlineKeyboardMarkup(rows)
+
+# ── V3: 2 columns, no icons — name + small 3-step stock bar + count ──
+_SVC_V3_NAME_MAX = 9
+
+def _svc_v3_name(sid):
+    name = _svc_display_name(sid)
+    return name if len(name) <= _SVC_V3_NAME_MAX else name[:_SVC_V3_NAME_MAX - 1] + "…"
+
+def _build_services_keyboard_v3(services):
+    items = [(i, svc.get("sid", f"Service {i+1}"), len(svc.get("ranges", [])))
+             for i, svc in enumerate(services)]
+    items.sort(key=lambda t: -t[2])
+    buttons = []
+    for i, sid, count in items:
+        filled = 0 if count <= 0 else (3 if count >= _SVC_HIGH else 2 if count >= _SVC_MID else 1)
+        bar = "▰" * filled + "▱" * (3 - filled)
+        buttons.append(InlineKeyboardButton(f"{_svc_v3_name(sid)} {bar} {count}",
+                                            callback_data=f"svc_{i}", style=_svc_style(count)))
+    rows = [buttons[j:j + 2] for j in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("⚙️ CUSTOM RANGE", callback_data="custom_range", style="danger")])
+    return InlineKeyboardMarkup(rows)
+
+def _build_services_keyboard(services):
+    v = get_service_design()
+    if v == 3:
+        return _build_services_keyboard_v3(services)
+    if v == 2:
+        return _build_services_keyboard_v2(services)
+    return _build_services_keyboard_v1(services)
+
+def _build_services_keyboard_v2(services):
+    items = []
+    for i, svc in enumerate(services):
+        sid = svc.get("sid", f"Service {i+1}")
+        items.append((i, sid, len(svc.get("ranges", []))))
+
+    # biggest first; callback_data keeps the ORIGINAL index i, so the click handler is unaffected.
+    items.sort(key=lambda t: -t[2])
+
+    buttons = [
+        InlineKeyboardButton(f"{_svc_icon(sid)} {_svc_display_name(sid)} · {count}",
+                             callback_data=f"svc_{i}", style=_svc_style(count))
+        for i, sid, count in items
+    ]
+    rows = [buttons[j:j + 2] for j in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("⚙️ CUSTOM RANGE", callback_data="custom_range", style="danger")])
+    return InlineKeyboardMarkup(rows)
+
+def _build_countries_keyboard(ranges, service_idx):
+    """Shows the country flag + name from the ranges."""
+    btns = []
+    seen = {}
+    # country button colors rotate
+    clrs = ["primary", "success", "danger", "primary", "success", "danger"]
+    ci   = 0
+    for i, r in enumerate(ranges[:24]):
+        prefix = re.sub(r'[xX]+$', '', str(r)).strip()
+        prefix_clean = re.sub(r'\D', '', prefix)
+        flag, cname = get_country_info(prefix_clean)
+        label = f"{flag} {cname}"
+        if label not in seen:
+            seen[label] = i
+            color = clrs[ci % len(clrs)]
+            ci += 1
+            btns.append(InlineKeyboardButton(label, callback_data=f"rng_{i}", style=color))
+    rows = [btns[j:j+2] for j in range(0, len(btns), 2)]
+    rows.append([InlineKeyboardButton("◀️ BACK", callback_data="back_services", style="danger")])
+    return InlineKeyboardMarkup(rows)
+
+async def show_app_selection(update, context):
+    uid = update.effective_user.id
+    if is_user_banned(uid):
+        await update.message.reply_text(tr(uid, "banned"), reply_markup=main_keyboard(uid))
+        return
+
+    services = get_cached_services()
+    if not services:
+        await _do_liveaccess_fetch()
+        services = get_cached_services()
+
+    disabled = get_disabled_services()
+    services = [s for s in services if s.get("sid") not in disabled]
+
+    if not services:
+        await update.message.reply_text(
+            "⚠️ <b>No service available</b>\n⏳ Please try again in a moment.",
+            parse_mode="HTML",
+            reply_markup=main_keyboard(uid)
+        )
+        return
+
+    context.user_data["la_services"] = services
+    keyboard = _build_services_keyboard(services)
+    await update.message.reply_text(
+        "📞 <b>GET NUMBER</b>\n\n"
+        "<blockquote>✨ Select your preferred <b>Service</b> from below:</blockquote>" + _legend_html(),
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+
+
+# ==================== AUTO OTP MONITOR SECTION ====================
+
+async def monitor_loop(app):
+    range_db = load_data(DATA_RANGE_FILE)
+    # Local per-session cache of sms_keys already seen, just to skip redundant
+    # lock/DB round-trips within this loop's lifetime. NOT the source of truth —
+    # credit_otp_if_new() re-checks the real DB atomically before paying out.
+    processed_in_session = set()
+
+    while True:
+        if not active_numbers:
+            # Nobody is waiting for an OTP — don't hit the panel API at all.
+            await asyncio.sleep(IDLE_CHECK_INTERVAL)
+            continue
+        if len(processed_in_session) > 5000:
+            processed_in_session.clear()
+        try:
+            r = await client_async.get(f"{BASE_URL}/api/success-otp-info")
+            res = r.json()
+            if "data" in res and "otps" in res["data"]:
+                otps = res["data"]["otps"]
+
+                for otp in otps:
+                    num = normalize_number(otp.get("number", ""))
+                    full_sms = otp.get('message') or otp.get('otp') or otp.get('sms') or "No SMS Content"
+                    otp_code = extract_otp(full_sms)
+                    otp_id = str(otp.get("otp_id", ""))
+                    sms_key = otp_id if otp_id else f"{num}_{full_sms}"
+
+                    if num in active_numbers and sms_key not in processed_in_session:
+                        details = active_numbers[num]
+
+                        credited = await credit_otp_if_new(sms_key, details["uid"], otp_code)
+                        processed_in_session.add(sms_key)
+                        if not credited:
+                            # Already paid via another path (e.g. a manual SEARCH OTP
+                            # that raced ahead of us) — don't pay or notify again.
+                            continue
+
+                        log_global_activity(details["uid"], "OTP_RECEIVED", {"number": num, "otp": otp_code, "sms": full_sms})
+
+                        num_range_info = range_db.get(num, {}).get("range", "")
+                        if not num_range_info:
+                            num_range_info = active_numbers.get(num, {}).get("range", "")
+                        if not num_range_info and num:
+                            _d = re.sub(r'\D', '', str(num))
+                            num_range_info = (_d[:-3] + 'XXX') if len(_d) > 3 else (_d + 'XXX')
+
+                        country_flag, country_name = get_country_info(num)
+                        service_name = detect_service(full_sms)
+                        clean_num = num.replace('+', '').strip()
+                        full_number = f"+{clean_num}"
+                        masked_number = f"+{mask_number(clean_num)}"
+
+                        safe_full_sms = html.escape(str(full_sms))
+                        safe_otp_code = html.escape(str(otp_code))
+
+                        user_msg = (
+                            f"✅ <b>OTP RECEIVE SUCCESSFUL</b> ✅\n\n"
+                            f"<blockquote>📶 RANGE: <code>{num_range_info}</code></blockquote>\n"
+                            f"<blockquote>🌍 COUNTRY: <code>{country_flag} {country_name}</code></blockquote>\n"
+                            f"<blockquote>📱 SERVICE: <code>{service_name}</code></blockquote>\n"
+                            f"<blockquote>📞 NUMBER: <code>{full_number}</code></blockquote>\n"
+                            f"<blockquote>🔑 OTP: <code>{safe_otp_code}</code></blockquote>\n\n"
+                            f"<blockquote>📩 FULL SMS:\n<code>{safe_full_sms}</code></blockquote>\n\n"
+                            f"<b>💵 ADD BALANCE FOR {get_otp_rate():.2f} BDT</b>"
+                        )
+                        # NUMBER TEMPLATE V2 ON → plain OTP message (flag + number + OTP only)
+                        user_markup = None
+                        if is_number_template_v2_on():
+                            user_msg = build_otp_text_v2(country_flag, clean_num, otp_code)
+                            user_markup = build_otp_keyboard_v2(otp_code)
+
+                        group_msg = (
+                            f"✅ <b>OTP RECEIVE SUCCESSFUL</b> ✅\n\n"
+                            f"<blockquote>📶 RANGE: <code>{num_range_info}</code></blockquote>\n"
+                            f"<blockquote>🌍 COUNTRY: <code>{country_flag} {country_name}</code></blockquote>\n"
+                            f"<blockquote>📱 SERVICE: <code>{service_name}</code></blockquote>\n"
+                            f"<blockquote>📞 NUMBER: <code>{masked_number}</code></blockquote>\n"
+                            f"<blockquote>🔑 OTP: <code>{safe_otp_code}</code></blockquote>\n\n"
+                            f"<blockquote>📩 FULL SMS:\n<code>{safe_full_sms}</code></blockquote>"
+                        )
+
+                        # ★★★ GROUP BUTTONS COLOR UPDATED ★★★
+                        group_buttons = InlineKeyboardMarkup([
+                            [
+                                InlineKeyboardButton("‼️ PANEL", url=PANEL_BOT_LINK, style="danger"),
+                                InlineKeyboardButton("📢 CHANNEL", url=CHANNEL_LINK, style="success")
+                            ]
+                        ])
+
+                        try:
+                            await app.bot.send_message(details["uid"], user_msg, parse_mode="HTML", reply_markup=user_markup)
+                        except Exception as e:
+                            print(f"❌ User Message Send Fail: {e}")
+
+                        try:
+                            await app.bot.send_message(OTP_GROUP_ID, group_msg, parse_mode="HTML", reply_markup=group_buttons)
+                        except Exception as e:
+                            print(f"❌ Group Send Fail: {e}")
+
+                current_time = datetime.now()
+                for num_key in list(active_numbers.keys()):
+                    entry = active_numbers[num_key]
+                    if 'timestamp' not in entry:
+                        entry['timestamp'] = current_time
+                    elif (current_time - entry['timestamp']).total_seconds() > 3600:
+                        del active_numbers[num_key]
+
+        except Exception as e:
+            print(f"Monitor Error: {e}")
+        await asyncio.sleep(CHECK_INTERVAL)
+
+# ==================== WORKER & API SECTION ====================
+
+async def fetch_number_async(range_str):
+    try:
+        r = await client_async.post(
+            f"{BASE_URL}/api/getnum",
+            json={"range": range_str, "is_national": False}
+        )
+        data = r.json()
+        d = data.get("data", {})
+        if "full_number" in d:
+            return {
+                "number":  d["full_number"],
+                "otp_now": bool(d.get("otp_now", False)),
+                "otp":     d.get("otp"),
+                "sms":     d.get("sms"),
+            }
+    except Exception as e:
+        print(f"Fetch number error: {e}")
+    return None
+
+async def fast_allocate_number(query, context, range_text, sid):
+    uid = query.from_user.id
+
+    if is_user_banned(uid):
+        await query.message.edit_text(tr(uid, "banned"))
+        return
+
+    try:
+        res = await fetch_number_async(range_text)
+    except Exception as e:
+        await query.message.edit_text(f"❌ Server error: {str(e)[:100]}")
+        return
+
+    if not res or not res.get("number"):
+        await query.message.edit_text(
+            "❌ <b>No number found.</b>\n\n"
+            "<blockquote>⚠️ No number is available in this range right now, or the server is busy.\n"
+            "Please try another range.</blockquote>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 BACK", callback_data="back_services", style="danger")
+            ]])
+        )
+        return
+
+    clean_num = normalize_number(res["number"])
+    add_number_taken(uid, 1)
+    last_range[uid] = range_text
+    last_service[uid] = {"range": range_text, "sid": sid}
+    active_numbers[clean_num] = {"uid": uid, "range": range_text, "timestamp": datetime.now()}
+    save_number_range_info(uid, clean_num, range_text)
+
+    country_flag, country_name = get_country_info(clean_num)
+
+    _v2 = is_number_template_v2_on()
+    if res.get("otp_now") and res.get("otp"):
+        otp_safe = html.escape(str(res["otp"]))
+        sms_safe  = html.escape(str(res.get("sms") or ""))
+        add_otp_received(uid)
+        text = build_number_text_v2(country_flag, clean_num, res["otp"], res.get("sms")) if _v2 else (
+            f"✅ <b>YOUR NUMBER</b> ✅\n\n"
+            f"<blockquote>🌍 COUNTRY: <code>{country_flag} {html.escape(country_name)}</code></blockquote>\n"
+            f"<blockquote>📶 RANGE: <code>{range_text}</code></blockquote>\n"
+            f"<blockquote>📞 NUMBER: <code>+{clean_num}</code></blockquote>\n"
+            f"<blockquote>🔑 OTP: <code>{otp_safe}</code></blockquote>"
+            + (f"\n<blockquote>📩 SMS: <code>{sms_safe}</code></blockquote>" if sms_safe else "")
+            + "\n\n<b>✅ OTP RECEIVED INSTANTLY!</b>"
+        )
+    else:
+        text = build_number_text_v2(country_flag, clean_num) if _v2 else (
+            f"✅ <b>YOUR NUMBER</b> ✅\n\n"
+            f"<blockquote>🌍 COUNTRY: <code>{country_flag} {html.escape(country_name)}</code></blockquote>\n"
+            f"<blockquote>📶 RANGE: <code>{range_text}</code></blockquote>\n"
+            f"<blockquote>📞 NUMBER: <code>+{clean_num}</code></blockquote>\n\n"
+            f"<b>📩 SMS STATUS: ⏳ WAITING...</b>"
+        )
+
+    # ★★★ USER BUTTONS COLOR UPDATED ★★★
+    keyboard = build_number_keyboard(clean_num, _v2, country_flag, sid)
+    try:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    except Exception as e:
+        print(f"fast_allocate edit error: {e}")
+
+async def worker():
+    while True:
+        task = await request_queue.get()
+        try:
+            if task['type'] == 'process_numbers':
+                await process_numbers(task['update'], task['context'], task['range_text'], task['count'])
+            elif task['type'] == 'search_otp':
+                await perform_otp_search(task['update'], task['context'], task['target_num'])
+            elif task['type'] == 'auto_number':
+                await process_auto_number(task['update'], task['context'], task['range_text'])
+        except Exception as e:
+            print(f"Worker Error: {e}")
+        finally:
+            request_queue.task_done()
+
+# ==================== AUTO NUMBER FROM LINK / DEEP LINK ====================
+
+async def process_auto_number(update, context, range_text):
+    uid = update.effective_user.id
+    chat_id = update.effective_chat.id
+
+    if is_user_banned(uid):
+        await context.bot.send_message(chat_id=chat_id, text=tr(uid, "banned"), reply_markup=main_keyboard(uid))
+        return
+
+    status_msg = await context.bot.send_message(chat_id=chat_id, text="🔍 SEARCHING...")
+
+    try:
+        res = await fetch_number_async(range_text)
+        if not res:
+            await status_msg.edit_text("❌ NO NUMBERS FOUND. TRY A VALID RANGE.")
             return
 
-@bot.message_handler(content_types=["text", "document"])
-def handle_text_docs(msg):
-    user_id = msg.from_user.id
-    if msg.chat.type != "private":
-        return
-    state = user_states.get(user_id)
-    if not state:
-        return
-    action = state.get("action")
-    if action in ("change_site_username", "change_site_password"):
-        site_key = state["site_key"]
-        acc_id = state["account_id"]
-        key_name = "username" if action == "change_site_username" else "password"
-        for acc in SETTINGS[site_key]["accounts"]:
-            if acc["id"] == acc_id:
-                acc[key_name] = msg.text.strip()
-                save_settings(SETTINGS)
-                break
-        del user_states[user_id]
-        bot.reply_to(msg, "✅ تم التحديث بنجاح!")
+        generated_num = normalize_number(res["number"]) if res else None
+        if not generated_num:
+            await status_msg.edit_text("❌ NO NUMBERS FOUND. TRY A VALID RANGE.")
+            return
 
-# ── All 10 Sites Monitoring Loops ────────────────────────────────────────────
-def fetch_ajax_data_np(account_session, site_key, account):
+        add_number_taken(uid, 1)
+        last_range[uid] = range_text
+        last_service.pop(uid, None)
+        active_numbers[generated_num] = {"uid": uid, "range": range_text, "timestamp": datetime.now()}
+        save_number_range_info(uid, generated_num, range_text)
+
+        country_flag, country_name = get_country_info(generated_num)
+
+        _v2 = is_number_template_v2_on()
+        if res.get("otp_now") and res.get("otp"):
+            instant_otp = html.escape(str(res["otp"]))
+            instant_sms = html.escape(str(res.get("sms") or ""))
+            add_otp_received(uid)
+            final_text = build_number_text_v2(country_flag, generated_num, res["otp"], res.get("sms")) if _v2 else (
+                f"✅ <b>YOUR NUMBER DETAILS</b> ✅\n\n"
+                f"<blockquote>🌍 COUNTRY: <code>{country_flag} {country_name}</code></blockquote>\n"
+                f"<blockquote>📶 RANGE: <code>{range_text}</code></blockquote>\n\n"
+                f"<blockquote>📞 NUMBER: <code>+{generated_num}</code></blockquote>\n\n"
+                f"<blockquote>🔑 OTP: <code>{instant_otp}</code></blockquote>\n"
+                + (f"<blockquote>📩 SMS: <code>{instant_sms}</code></blockquote>\n" if instant_sms else "")
+                + f"\n<b>✅ OTP RECEIVED INSTANTLY!</b>"
+            )
+        else:
+            final_text = build_number_text_v2(country_flag, generated_num) if _v2 else (
+                f"✅ <b>YOUR NUMBER DETAILS</b> ✅\n\n"
+                f"<blockquote>🌍 COUNTRY: <code>{country_flag} {country_name}</code></blockquote>\n"
+                f"<blockquote>📶 RANGE: <code>{range_text}</code></blockquote>\n\n"
+                f"<blockquote>📞 NUMBER: <code>+{generated_num}</code></blockquote>\n\n"
+                f"<b>📩 SMS STATUS: ⏳ WAITING...</b>"
+            )
+
+        # ★★★ SAME RANGE BUTTON COLOR IN AUTO NUMBER (FOR CONSISTENCY) ★★★
+        keyboard = build_number_keyboard(generated_num, _v2, country_flag, "")
+        await status_msg.edit_text(final_text, parse_mode="HTML", reply_markup=keyboard)
+
+    except Exception as e:
+        print(f"Auto Number Error: {e}")
+        await status_msg.edit_text(f"❌ Error: {str(e)}")
+
+# ==================== USER PANEL — PROCESS NUMBERS ====================
+
+async def process_numbers(update_or_query, context, range_text, count):
+    if isinstance(update_or_query, Update) and update_or_query.callback_query:
+        uid = update_or_query.callback_query.from_user.id
+        chat_id = update_or_query.callback_query.message.chat_id
+    else:
+        uid = update_or_query.effective_user.id
+        chat_id = update_or_query.effective_chat.id
+
+    if is_user_banned(uid):
+        await context.bot.send_message(chat_id=chat_id, text=tr(uid, "banned"), reply_markup=main_keyboard(uid))
+        return
+
+    status_msg = await context.bot.send_message(chat_id=chat_id, text="🔍 SEARCHING . . .")
+
     try:
-        api_token = account.get("api_token") or account.get("id")
-        if not api_token or api_token == "Api Token":
-            return {"aaData": []}, False
-        r = account_session.get("http://147.135.212.197/crapi/st/viewstats", params={"token": api_token, "records": 50}, timeout=30)
-        if r.status_code == 200:
-            data = r.json()
-            if isinstance(data, list):
-                formatted_rows = []
-                for item in data:
-                    if isinstance(item, list) and len(item) >= 4:
-                        row = [None] * 6
-                        row[0], row[1], row[2], row[5] = item[3], item[0], item[1], item[2]
-                        formatted_rows.append(row)
-                return {"aaData": formatted_rows}, False
-        return {"aaData": []}, False
-    except Exception:
-        return None, False
+        add_number_taken(uid, count)
+        last_range[uid] = range_text
 
-def sms_loop_for_number_panel_account(site_key, account):
-    api_token = account.get("api_token") or account.get("id")
-    check_interval = SETTINGS[site_key].get("check_interval", 5)
-    account_session = requests.Session()
-    safe_id = "".join(x for x in api_token if x.isalnum())[:15]
-    last_message_file = f"last_message_{site_key}_{safe_id}.txt"
-    last_seen_key_local = ""
-    if os.path.exists(last_message_file):
-        try:
-            with open(last_message_file, "r", encoding="utf-8") as f:
-                last_seen_key_local = f.read().strip()
-        except Exception:
-            pass
-    while True:
-        try:
-            j, _ = fetch_ajax_data_np(account_session, site_key, {"api_token": api_token})
-            rows = j.get("aaData", []) if isinstance(j, dict) else []
-            valid_rows = []
-            for row in rows:
-                if isinstance(row, list) and len(row) > 5:
-                    date_str = clean_html_site2(row[0])
-                    number = clean_number(row[2])
-                    sms = clean_html_site2(row[5])
-                    s_name = clean_html_site2(row[1]) if row[1] else ""
-                    if date_str and number and sms:
-                        valid_rows.append((date_str, number, sms, f"{date_str}|{number}|{sms}", s_name))
-            if valid_rows:
-                valid_rows.sort(key=lambda r: r[0], reverse=True)
-                if not last_seen_key_local:
-                    r = valid_rows[0]
-                    otp_val, sms_text = extract_from_message(r[2])
-                    formatted = format_otp_message_v2(r[1], sms_text, f"[{r[4] or detect_service(r[2])}]", otp_val)
-                    send_otp_to_user(clean_number(r[1]), formatted, r[1], None, otp_val)
-                    last_seen_key_local = r[3]
-                    with open(last_message_file, "w", encoding="utf-8") as f:
-                        f.write(last_seen_key_local)
-                else:
-                    new_msgs = []
-                    for r in valid_rows:
-                        if r[3] == last_seen_key_local:
-                            break
-                        new_msgs.append(r)
-                    for r in reversed(new_msgs):
-                        otp_val, sms_text = extract_from_message(r[2])
-                        formatted = format_otp_message_v2(r[1], sms_text, f"[{r[4] or detect_service(r[2])}]", otp_val)
-                        send_otp_to_user(clean_number(r[1]), formatted, r[1], None, otp_val)
-                        last_seen_key_local = r[3]
-                    if new_msgs:
-                        with open(last_message_file, "w", encoding="utf-8") as f:
-                            f.write(last_seen_key_local)
-            time.sleep(check_interval)
-        except Exception:
-            time.sleep(10)
+        tasks = [fetch_number_async(range_text) for _ in range(count)]
+        results = await asyncio.gather(*tasks)
+        valid_results = [r for r in results if r and r.get("number")]
 
-def sms_loop_for_ivasms_account(site_key, account):
-    account_id = account.get("id")
-    username = account.get("username")
-    password = account.get("password")
-    api_key = account.get("api_key", "")
-    stop_event = account_stop_events.setdefault(f"{site_key}_{account_id}", Event())
-    API_URL = SETTINGS[site_key].get("api_url", "https://maroon-wombat-183778.hostingersite.com/apiivasms/api.php")
-    sent_file = f"sent_messages_{site_key}_{account_id}.json"
-    sent_messages_local = set()
-    if os.path.exists(sent_file):
-        try:
-            with open(sent_file, 'r') as f:
-                sent_messages_local = set(json.load(f))
-        except Exception:
-            pass
-    while not stop_event.is_set():
-        try:
-            resp = requests.get(API_URL, params={'api_key': api_key, 'username': username, 'password': password, '_t': int(time.time() * 1000)}, timeout=SETTINGS[site_key]["timeout"], verify=False)
-            if resp.status_code == 200:
-                data = resp.json()
-                for msg in (data.get('codes', []) if data.get('success') else []):
-                    phone = msg.get('phone', msg.get('number', ''))
-                    message_text = msg.get('message', msg.get('sms', msg.get('text', '')))
-                    if not phone or not message_text:
-                        continue
-                    msg_key = f"{phone}|{message_text[:50]}"
-                    if msg_key not in sent_messages_local:
-                        otp_val, sms_text = extract_from_message(message_text)
-                        formatted = format_otp_message_v2(phone, sms_text, f"[{detect_service(message_text)}]", otp_val)
-                        send_otp_to_user(clean_number(phone), formatted, phone, None, otp_val)
-                        sent_messages_local.add(msg_key)
-                with open(sent_file, 'w') as f:
-                    json.dump(list(sent_messages_local)[-500:], f)
-        except Exception:
-            time.sleep(10)
-        if stop_event.wait(SETTINGS[site_key]["check_interval"]):
-            break
+        if not valid_results:
+            await status_msg.edit_text("❌ NO NUMBERS FOUND. TRY A VALID RANGE.")
+            return False
 
-def sms_loop_requests_based(site_key, account):
-    account_id = account.get("id")
-    username = account.get("username")
-    password = account.get("password")
-    stop_event = account_stop_events.setdefault(f"{site_key}_{account_id}", Event())
-    base_u = SETTINGS[site_key]["base_url"].rstrip('/')
-    login_p = SETTINGS[site_key]["login_page_url"]
-    login_post = SETTINGS[site_key]["login_post_url"]
-    ajax_p = SETTINGS[site_key].get("ajax_path", "/agent/res/data_smscdr.php")
-    ajax_u = base_u + ajax_p
-    check_int = SETTINGS[site_key]["check_interval"]
-    timeout_l = SETTINGS[site_key].get("timeout", 60)
+        num_entries = []
+        for r in valid_results:
+            clean_num = normalize_number(r["number"])
+            if clean_num:
+                active_numbers[clean_num] = {"uid": uid, "range": range_text, "timestamp": datetime.now()}
+                save_number_range_info(uid, clean_num, range_text)
+                num_entries.append({
+                    "num":     clean_num,
+                    "otp_now": r.get("otp_now", False),
+                    "otp":     r.get("otp"),
+                    "sms":     r.get("sms"),
+                })
 
-    session = requests.Session()
-    session.verify = False
-    session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
-    is_logged_in = False
-    last_message_file = f"last_message_{site_key}_{account_id}.txt"
-    last_seen_key_local = ""
-    if os.path.exists(last_message_file):
-        try:
-            with open(last_message_file, "r", encoding="utf-8") as f:
-                last_seen_key_local = f.read().strip()
-        except Exception:
-            pass
+        if not num_entries:
+            await status_msg.edit_text("❌ NO NUMBERS FOUND. TRY A VALID RANGE.")
+            return False
 
-    def do_login():
-        nonlocal is_logged_in
-        try:
-            resp = session.get(login_p, timeout=timeout_l)
-            match = re.search(r'What is (\d+) \+ (\d+)', resp.text) or re.search(r'(\d+)\s*\+\s*(\d+)', resp.text)
-            payload = {'username': username, 'password': password}
-            if match:
-                payload['capt'] = str(int(match.group(1)) + int(match.group(2)))
-            crlf = re.search(r"name=['\"]crlf['\"].*?value=['\"]([^'\"]+)['\"]", resp.text)
-            if crlf:
-                payload['crlf'] = crlf.group(1)
-            r2 = session.post(login_post, data=payload, headers={'Content-Type': 'application/x-www-form-urlencoded', 'Referer': login_p, 'Origin': base_u}, timeout=timeout_l, allow_redirects=True)
-            if r2.url != login_p or any(k in r2.text.lower() for k in ('dashboard', 'logout', 'agent', 'smscdr')):
-                is_logged_in = True
-                return True
-        except Exception:
-            pass
+        country_flag, country_name = get_country_info(num_entries[0]["num"])
+
+        num_lines = []
+        for entry in num_entries:
+            if entry["otp_now"] and entry["otp"]:
+                otp_safe = html.escape(str(entry["otp"]))
+                sms_safe = html.escape(str(entry.get("sms") or ""))
+                add_otp_received(uid)
+                line = (
+                    f"<blockquote>📞 NUMBER: <code>+{entry['num']}</code>\n"
+                    f"🔑 OTP: <code>{otp_safe}</code>"
+                    + (f"\n📩 SMS: <code>{sms_safe}</code>" if sms_safe else "")
+                    + "</blockquote>"
+                )
+            else:
+                line = f"<blockquote>📞 NUMBER: <code>+{entry['num']}</code></blockquote>"
+            num_lines.append(line)
+
+        num_list_text = "\n".join(num_lines)
+        any_instant = any(e["otp_now"] and e["otp"] for e in num_entries)
+        sms_status = "✅ OTP RECEIVED INSTANTLY!" if any_instant else "📩 SMS STATUS: ⏳ WAITING..."
+
+        final_text = (
+            f"✅ <b>YOUR NUMBER DETAILS</b> ✅\n\n"
+            f"<blockquote>🌍 COUNTRY: <code>{country_flag} {country_name}</code></blockquote>\n"
+            f"<blockquote>📶 RANGE: <code>{range_text}</code></blockquote>\n\n"
+            f"{num_list_text}\n\n"
+            f"<b>{sms_status}</b>"
+        )
+
+        # ★★★ NUMBER TEMPLATE VERSION 2 (flag + number only) ★★★
+        _v2 = is_number_template_v2_on()
+        if _v2:
+            _e0 = num_entries[0]
+            final_text = build_number_text_v2(country_flag, _e0["num"], _e0["otp"] if _e0["otp_now"] else None)
+
+        # ★★★ PROCESS NUMBERS BUTTONS COLOR UPDATE (FOR SINGLE NUMBER) ★★★
+        _svc = last_service.get(uid) or {}
+        _sid = _svc.get("sid", "") if _svc.get("range") == range_text else ""
+        keyboard = build_number_keyboard(num_entries[0]["num"], _v2, country_flag, _sid)
+
+        await status_msg.edit_text(final_text, parse_mode="HTML", reply_markup=keyboard)
+        return True
+
+    except Exception as e:
+        print(f"Process Number Error: {e}")
+        await status_msg.edit_text(f"❌ System Error: {str(e)}")
         return False
 
-    while not stop_event.is_set():
-        try:
-            if not is_logged_in and not do_login():
-                time.sleep(20)
-                continue
-            today = datetime.now()
-            start_d = (today - timedelta(days=1)).strftime('%Y-%m-%d')
-            end_d = (today + timedelta(days=1)).strftime('%Y-%m-%d')
-            referer_url = base_u + ("/agent/SMSCDRReports" if "/ints" in base_u else "/ints/agent/SMSCDRReports")
-            payload = {'fdate1': f'{start_d} 00:00:00', 'fdate2': f'{end_d} 23:59:59', 'fg': '0', 'sEcho': '1', 'iDisplayStart': '0', 'iDisplayLength': '100', 'iSortCol_0': '0', 'sSortDir_0': 'desc'}
-            r = session.post(ajax_u, data=payload, headers={'X-Requested-With': 'XMLHttpRequest', 'Referer': referer_url}, timeout=timeout_l)
-            if r.status_code == 200:
-                try:
-                    data = r.json()
-                    rows = data.get('data') or data.get('aaData') or data.get('rows') or []
-                except Exception:
-                    is_logged_in = False
-                    rows = []
-                valid = []
-                for row in rows:
-                    if isinstance(row, list) and len(row) >= 6:
-                        d_str, num, sms = str(row[0]).strip(), re.sub(r'\D', '', str(row[2])), str(row[5]).strip()
-                        if d_str and len(num) >= 7 and sms and 'nan%' not in sms.lower():
-                            valid.append({'date': d_str, 'number': num, 'sms': sms})
-                valid.sort(key=lambda x: x['date'])
-                new_msgs = []
-                for m in valid:
-                    k = f"{m['date']}|{m['number']}"
-                    if k == last_seen_key_local:
-                        new_msgs = []
-                        continue
-                    new_msgs.append(m)
-                for m in new_msgs:
-                    otp_val, sms_text = extract_from_message(m['sms'])
-                    formatted = format_otp_message_v2(m['number'], sms_text, f"[{detect_service(m['sms'])}]", otp_val)
-                    send_otp_to_user(clean_number(m['number']), formatted, m['number'], None, otp_val)
-                    last_seen_key_local = f"{m['date']}|{m['number']}"
-                if new_msgs:
-                    with open(last_message_file, "w", encoding="utf-8") as f:
-                        f.write(last_seen_key_local)
+async def perform_otp_search(update, context, target_num):
+    uid = str(update.effective_user.id)
+
+    if is_user_banned(int(uid)):
+        await update.message.reply_text(tr(int(uid), "banned"), reply_markup=main_keyboard(int(uid)))
+        return
+
+    # Ownership check — only let a user search OTPs for a number they actually took
+    # themselves. Uses the persistent range_db (not the in-memory active_numbers,
+    # which expires after 1hr / resets on restart) so this still works for recovery,
+    # but blocks users from fishing for OTPs/credit on numbers that aren't theirs.
+    if not is_admin(int(uid)):
+        range_db = load_range_db()
+        owner_record = range_db.get(target_num)
+        if not owner_record or str(owner_record.get("user_id")) != uid:
+            await update.message.reply_text(
+                "🚫 <b>এই নাম্বারটি আপনার নেওয়া নয়।</b>\n\n"
+                "<blockquote>শুধু নিজের নেওয়া নাম্বারের OTP সার্চ করা যাবে।</blockquote>",
+                parse_mode="HTML",
+                reply_markup=main_keyboard(int(uid))
+            )
+            return
+
+    status_msg = await update.message.reply_text("🔍 SEARCHING IN SERVER...")
+
+    try:
+        r = await client_async.get(f"{BASE_URL}/api/success-otp-info")
+        res = r.json()
+
+        if "data" in res and "otps" in res["data"]:
+            all_otps = res["data"]["otps"]
+            found_otps = [o for o in all_otps if normalize_number(o.get("number", "")) == target_num]
+
+            if not found_otps:
+                error_msg = (
+                    "━━━━━━━━━━━━━━━━━━\n❌ NO OTP FOUND\n━━━━━━━━━━━━━━━━━━\n\n"
+                    f"📞 NUMBER:\n`+{target_num}`\n\n⏳ PLEASE TRY AGAIN LATER\n━━━━━━━━━━━━━━━━━━"
+                )
+                await status_msg.edit_text(error_msg, parse_mode="Markdown")
+                await update.message.reply_text("🔙 RETURNING TO MAIN MENU...", reply_markup=main_keyboard(int(uid)))
             else:
-                is_logged_in = False
-        except Exception:
-            is_logged_in = False
-        if stop_event.wait(check_int):
-            break
+                await status_msg.delete()
 
-def sms_loop_for_ims_account(site_key, account):
-    sms_loop_requests_based(site_key, account)
+                for o in found_otps:
+                    full_sms = o.get('message') or o.get('otp') or o.get('sms') or "No Content Found"
+                    otp_code = extract_otp(full_sms)
+                    otp_id = str(o.get("otp_id", ""))
+                    sms_key = otp_id if otp_id else f"{target_num}_{full_sms}"
 
-def sms_loop_for_roxy_account(site_key, account):
-    username = account.get("username")
-    password = account.get("password")
-    account_id = account.get("id")
-    stop_event = account_stop_events.setdefault(f"{site_key}_{account_id}", Event())
-    scraper = cloudscraper.create_scraper()
-    is_logged_in = False
-    last_message_file = f"last_message_{site_key}_{account_id}.txt"
-    last_seen_key_local = ""
-    if os.path.exists(last_message_file):
-        try:
-            with open(last_message_file, "r", encoding="utf-8") as f:
-                last_seen_key_local = f.read().strip()
-        except Exception:
-            pass
-    headers = {"User-Agent": "Mozilla/5.0", "X-Requested-With": "XMLHttpRequest", "Referer": "http://www.roxysms.net/agent/SMSCDRReports"}
-    while not stop_event.is_set():
-        try:
-            if not is_logged_in:
-                lr = scraper.post("http://www.roxysms.net/signin", data={"username": username, "password": password}, headers=headers, timeout=30)
-                if lr.status_code == 200 and ("success" in lr.text.lower() or "logout" in lr.text.lower()):
-                    is_logged_in = True
-                else:
-                    time.sleep(30)
-                    continue
-            today = datetime.now().strftime('%Y-%m-%d')
-            r = scraper.get("http://www.roxysms.net/agent/res/data_smscdr.php", params={'fdate1': f'{today} 00:00:00', 'fdate2': f'{today} 23:59:59', 'fg': '0'}, headers=headers, timeout=30)
-            if r.status_code != 200 or 'login' in r.url.lower():
-                is_logged_in = False
-                continue
-            rows = r.json().get('aaData', [])
-            new_msgs = []
-            for row in rows:
-                if isinstance(row, list) and len(row) >= 6:
-                    d_str, num, msg_txt = str(row[0]), re.sub(r'\D', '', str(row[2])), str(row[5])
-                    k = f"{d_str}|{num}"
-                    if k == last_seen_key_local:
-                        break
-                    new_msgs.append({'date': d_str, 'number': num, 'sms': msg_txt})
-            if new_msgs:
-                last_seen_key_local = f"{new_msgs[0]['date']}|{new_msgs[0]['number']}"
-                with open(last_message_file, "w", encoding="utf-8") as f:
-                    f.write(last_seen_key_local)
-                for m in reversed(new_msgs):
-                    otp_val, clean_sms = extract_from_message(m['sms'])
-                    formatted = format_otp_message_v2(m['number'], clean_sms, f"[{detect_service(clean_sms)}]", otp_val)
-                    send_otp_to_user(clean_number(m['number']), formatted, m['number'], None, otp_val)
-        except Exception:
-            is_logged_in = False
-        if stop_event.wait(SETTINGS[site_key].get("check_interval", 5)):
-            break
-
-def sms_loop_for_timesms_account(site_key, account):
-    site_name = SETTINGS[site_key]["name"]
-    username = account.get("username")
-    password = account.get("password")
-    account_id = account.get("id")
-    stop_event = account_stop_events.setdefault(f"{site_key}_{account_id}", Event())
-    sess = make_timesms_session({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    })
-    is_logged_in = False
-    last_message_file = f"last_message_{site_key}_{account_id}.txt"
-    last_seen_key_local = ""
-    if os.path.exists(last_message_file):
-        try:
-            with open(last_message_file, "r", encoding="utf-8") as f:
-                last_seen_key_local = f.read().strip()
-        except Exception:
-            pass
-    login_url = SETTINGS[site_key]["login_page_url"]
-    submit_url = SETTINGS[site_key]["login_post_url"]
-    ajax_url = SETTINGS[site_key]["base_url"] + "/agent/res/data_smscdr.php"
-    while not stop_event.is_set():
-        try:
-            if not is_logged_in:
-                resp = sess.get(login_url, timeout=20, verify=False)
-                captcha = solve_captcha_timesms(resp.text)
-                if captcha:
-                    lr = sess.post(submit_url, data={'username': username, 'password': password, 'capt': captcha}, headers={'Referer': login_url}, timeout=20, allow_redirects=True, verify=False)
-                    if 'login' not in str(lr.url).lower():
-                        is_logged_in = True
+                    credited = await credit_otp_if_new(sms_key, uid, otp_code)
+                    if credited:
+                        payment_status = f"💵 ADD BALANCE FOR {get_otp_rate():.2f} BDT"
                     else:
-                        time.sleep(30)
-                        continue
-                else:
-                    time.sleep(30)
-                    continue
-            today = datetime.now().strftime('%Y-%m-%d')
-            r = sess.get(ajax_url, params={'fdate1': f'{today} 00:00:00', 'fdate2': f'{today} 23:59:59', 'fg': '0', 'sEcho': '1', 'iDisplayStart': '0', 'iDisplayLength': '500', 'iSortCol_0': '0', 'sSortDir_0': 'desc'}, headers={'Referer': SETTINGS[site_key]["base_url"] + "/agent/SMSCDRReports", 'X-Requested-With': 'XMLHttpRequest'}, timeout=30, verify=False)
-            if r.status_code != 200 or 'login' in r.url.lower():
-                is_logged_in = False
-                continue
-            rows = r.json().get('aaData', [])
-            new_msgs = []
-            for row in rows:
-                if len(row) >= 6:
-                    msg_date, msg_num, msg_text = str(row[0]).strip(), str(row[2]).strip(), str(row[5]).strip()
-                    if not re.match(r'\d{4}-\d{2}-\d{2}', msg_date):
-                        continue
-                    k = f"{msg_date}_{msg_num}_{msg_text[:20]}"
-                    if k == last_seen_key_local:
-                        break
-                    new_msgs.append({'date': msg_date, 'number': msg_num, 'sms': msg_text, 'key': k})
-            if new_msgs:
-                last_seen_key_local = new_msgs[0]['key']
-                with open(last_message_file, "w", encoding="utf-8") as f:
-                    f.write(last_seen_key_local)
-                for m in reversed(new_msgs):
-                    otp_val, clean_sms = extract_from_message(m['sms'])
-                    formatted = format_otp_message_v2(m['number'], clean_sms, f"[{detect_service(clean_sms)}]", otp_val)
-                    send_otp_to_user(clean_number(m['number']), formatted, m['number'], None, otp_val)
-        except Exception as e:
-            print(f"[{site_name}] Warning (handled): {e}", flush=True)
-            is_logged_in = False
-        if stop_event.wait(SETTINGS[site_key].get("check_interval", 5)):
-            break
+                        payment_status = "❌ ALREADY PAID"
 
-def start_monitoring_for_account(site_key, account):
-    if site_key == "Number_Panel":
-        sms_loop_for_number_panel_account(site_key, account)
-    elif site_key == "iVASMS":
-        sms_loop_for_ivasms_account(site_key, account)
-    elif site_key == "IMS":
-        sms_loop_for_ims_account(site_key, account)
-    elif site_key == "Roxy SMS":
-        sms_loop_for_roxy_account(site_key, account)
-    elif site_key == "TimeSMS":
-        sms_loop_for_timesms_account(site_key, account)
+                    country_flag, country_name = get_country_info(target_num)
+                    service_name = detect_service(full_sms)
+
+                    msg = (
+                        f"✅ <b>OTP FOUND!</b>\n\n"
+                        f"<blockquote>🌍 COUNTRY: <code>{country_flag} {country_name}</code></blockquote>\n"
+                        f"<blockquote>📱 SERVICE: <code>{service_name}</code></blockquote>\n"
+                        f"<blockquote>📞 NUMBER: <code>+{target_num}</code></blockquote>\n"
+                        f"<blockquote>🔑 OTP: <code>{html.escape(otp_code)}</code></blockquote>\n\n"
+                        f"<blockquote>📩 FULL SMS:\n<code>{html.escape(str(full_sms))}</code></blockquote>\n\n"
+                        f"<b>{payment_status}</b>"
+                    )
+                    await update.message.reply_text(msg, parse_mode="HTML", reply_markup=main_keyboard(int(uid)))
+        else:
+            await status_msg.edit_text("❌ SERVER RETURNED AN ERROR.")
+            await update.message.reply_text("🔙 Returning to Main Menu...", reply_markup=main_keyboard(int(uid)))
+
+    except Exception as e:
+        try:
+            await status_msg.edit_text(f"❌ Error: {str(e)}")
+        except:
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+        await update.message.reply_text("🔙 Returning to Main Menu...", reply_markup=main_keyboard(int(uid)))
+
+# ==================== REFER AND EARN SECTION ====================
+
+async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    if is_user_banned(uid):
+        await update.message.reply_text(tr(uid, "banned"), reply_markup=main_keyboard(uid))
+        return
+
+    user_data = get_user(uid)
+    bot_info = await context.bot.get_me()
+
+    referral_link = f"https://t.me/{bot_info.username}?start={uid}"
+    successful_refers = get_referral_count(uid)
+    bonus = get_referral_bonus()
+    total_reward = float(load_referral_data().get(str(uid), {}).get("earned", 0.0))
+    comm_line = ""
+    if is_ref_commission_on() and calc_ref_commission() > 0:
+        comm_line = f"<blockquote>💸 PLUS {calc_ref_commission():g} BDT FOR EVERY OTP YOUR REFERRALS RECEIVE</blockquote>\n\n"
+
+    refer_msg = (
+        f"🎁 <b>REFER AND EARN SYSTEM</b> 🎁\n\n"
+        f"<blockquote>🚀 INVITE FRIENDS &amp; EARN {format_balance(bonus)} BDT EACH! 💸</blockquote>\n\n"
+        f"{comm_line}"
+        f"<b>🔗 YOUR REFERRAL LINK:</b>\n"
+        f"<blockquote><code>{referral_link}</code></blockquote>\n\n"
+        f"<b>📊 YOUR STATS:</b>\n"
+        f"<blockquote>👥 TOTAL REFERS: {successful_refers}\n"
+        f"💰 TOTAL EARNED: {format_balance(total_reward)} BDT</blockquote>\n\n"
+        f"✨ <b>SHARE LINK &amp; EARN MONEY!</b> ✨"
+    )
+
+    await update.message.reply_text(
+        refer_msg,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("👥 YOUR REFERRAL", callback_data=f"my_ref_{uid}", style="primary")
+        ]])
+    )
+
+# ==================== WITHDRAW FUNCTIONS ====================
+
+async def withdraw_method_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    uid = update.effective_user.id
+
+    if text == "❌ CANCEL":
+        context.user_data["withdraw_mode"] = None
+        await update.message.reply_text("❌ WITHDRAW CANCELLED", reply_markup=main_keyboard(uid))
+        return
+
+    label_to_key = {v: k for k, v in PAYMENT_METHOD_LABELS.items() if is_payment_method_enabled(k)}
+    method_map = {v: PAYMENT_METHOD_NAMES[k] for k, v in PAYMENT_METHOD_LABELS.items() if is_payment_method_enabled(k)}
+    if text in method_map:
+        balance = get_user(uid)['balance']
+        method_key = label_to_key[text]
+        context.user_data["withdraw_method"] = method_map[text]
+        context.user_data["withdraw_method_key"] = method_key
+        context.user_data["withdraw_mode"] = "amount"
+        msg = (
+            f"<blockquote>💸 SEND YOUR AMOUNT!\n"
+            f"💵 TOTAL BALANCE: {format_balance(balance)} BDT</blockquote>\n\n"
+            f"<blockquote>📉 MINIMUM WITHDRAW {get_min_withdraw(method_key):.0f} BDT</blockquote>"
+        )
+        await update.message.reply_text(msg, parse_mode="HTML", reply_markup=cancel_keyboard())
     else:
-        sms_loop_requests_based(site_key, account)
+        await update.message.reply_text("⚠️ PLEASE SELECT A VALID PAYMENT METHOD!", reply_markup=withdraw_method_keyboard())
+
+async def withdraw_amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    uid = update.effective_user.id
+
+    if text == "❌ CANCEL":
+        context.user_data["withdraw_mode"] = None
+        await update.message.reply_text("❌ WITHDRAW CANCELLED", reply_markup=main_keyboard(uid))
+        return
+
+    try:
+        amount = float(text)
+    except:
+        await update.message.reply_text("⚠️ PLEASE SEND A VALID AMOUNT!", reply_markup=cancel_keyboard())
+        return
+
+    balance = get_user(uid)['balance']
+    min_withdraw = get_min_withdraw(context.user_data.get("withdraw_method_key"))
+    if amount < min_withdraw or amount > MAX_WITHDRAW:
+        await update.message.reply_text(f"📉 MIN: {min_withdraw:.0f} BDT | MAX: {MAX_WITHDRAW} BDT", reply_markup=cancel_keyboard())
+        return
+    if amount > balance:
+        await update.message.reply_text("🚫 INSUFFICIENT BALANCE!", reply_markup=cancel_keyboard())
+        return
+
+    context.user_data["withdraw_amount"] = amount
+    context.user_data["withdraw_mode"] = "number"
+
+    method_key = context.user_data.get("withdraw_method_key")
+    if method_key == "pm_binance":
+        await update.message.reply_text(
+            "🆔 PLEASE SEND YOUR BINANCE ID!\n\n<blockquote>🔢 EXAMPLE: 432767980</blockquote>",
+            parse_mode="HTML", reply_markup=cancel_keyboard()
+        )
+    else:
+        await update.message.reply_text(
+            "📞 PLEASE SEND YOUR PAYMENT NUMBER!\n\n<blockquote>🔢 EXAMPLE: 017XXXXXXXX</blockquote>",
+            parse_mode="HTML", reply_markup=cancel_keyboard()
+        )
+
+async def withdraw_number_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    uid = update.effective_user.id
+
+    if text == "❌ CANCEL":
+        context.user_data["withdraw_mode"] = None
+        await update.message.reply_text("❌ WITHDRAW CANCELLED", reply_markup=main_keyboard(uid))
+        return
+
+    method_key = context.user_data.get("withdraw_method_key")
+    is_binance = method_key == "pm_binance"
+
+    if is_binance:
+        if not is_valid_binance_id(text):
+            await update.message.reply_text("⚠️ PLEASE SEND A VALID BINANCE ID!", reply_markup=cancel_keyboard())
+            return
+    else:
+        if not is_valid_bangladesh_number(text):
+            await update.message.reply_text("⚠️ PLEASE SEND VALID NUMBER! 017XXXXXXXX", reply_markup=cancel_keyboard())
+            return
+
+    method = context.user_data.get("withdraw_method")
+    amount = context.user_data.get("withdraw_amount")
+    payment_number = text
+    payment_id = generate_payment_id()
+
+    context.user_data["temp_withdraw"] = {
+        "method": method, "amount": amount,
+        "number": payment_number, "payment_id": payment_id
+    }
+
+    number_label = "BINANCE ID" if is_binance else "NUMBER"
+    msg = (
+        "✨ <b>YOUR PAYMENT DETAILS!</b> ✨\n\n"
+        f"<blockquote>📝 METHOD: {method}\n"
+        f"📞 {number_label}: {payment_number}\n\n"
+        f"✅ CORRECT → CONFIRM\n❌ WRONG → CANCEL</blockquote>"
+    )
+    await update.message.reply_text(
+        msg, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ CANCEL", callback_data="withdraw_cancel", style="danger"),
+            InlineKeyboardButton("✅ CONFIRM", callback_data="withdraw_confirm", style="success")
+        ]])
+    )
+
+async def process_withdraw_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    uid = query.from_user.id
+    await query.answer()
+
+    temp_data = context.user_data.get("temp_withdraw")
+    if not temp_data:
+        await query.message.reply_text("⚠️ SESSION EXPIRED.", reply_markup=main_keyboard(uid))
+        return
+
+    # Clear immediately so a rapid double-tap on CONFIRM can't submit two withdraw requests
+    context.user_data["temp_withdraw"] = None
+    context.user_data["withdraw_mode"] = None
+
+    method = temp_data["method"]
+    amount = temp_data["amount"]
+    payment_number = temp_data["number"]
+    payment_id = temp_data["payment_id"]
+
+    new_balance = await try_deduct_balance(uid, amount)
+    if new_balance is None:
+        await query.message.edit_text("🚫 INSUFFICIENT BALANCE! Your balance may have changed since you started this request.")
+        return
+
+    wr = load_withdraw_requests()
+    wr[str(payment_id)] = {
+        "user_id": uid, "method": method, "amount": amount,
+        "number": payment_number, "payment_id": payment_id,
+        "status": "pending", "timestamp": datetime.now().isoformat()
+    }
+    save_withdraw_requests(wr)
+
+    number_label = "BINANCE ID" if method == "BINANCE" else "NUMBER"
+
+    await query.message.edit_text(
+        f"✅ <b>WITHDRAWAL REQUEST SUBMITTED</b> ✅\n\n"
+        f"<blockquote>📝 METHOD: <code>{method}</code>\n"
+        f"📞 {number_label}: <code>{payment_number}</code>\n"
+        f"💰 AMOUNT: <code>{format_balance(amount)} BDT</code>\n"
+        f"🆔 ID: <code>{payment_id}</code></blockquote>",
+        parse_mode="HTML"
+    )
+    await context.bot.send_message(uid, "🎉 <b>WITHDRAW REQUEST SUBMITTED!</b>", parse_mode="HTML", reply_markup=main_keyboard(uid))
+
+    usd_line = f"\n💵 USD (≈{BDT_TO_USD_RATE} BDT/$): <code>{amount / BDT_TO_USD_RATE:.2f} USD</code>" if method == "BINANCE" else ""
+    admin_msg = (
+        f"✅ <b>NEW WITHDRAWAL REQUEST</b>\n\n"
+        f"<blockquote>🆔 USER: <code>{uid}</code>\n"
+        f"📝 METHOD: <code>{method}</code>\n"
+        f"📞 {number_label}: <code>{payment_number}</code>\n"
+        f"💰 AMOUNT: <code>{format_balance(amount)} BDT</code>{usd_line}\n"
+        f"🆔 ID: <code>{payment_id}</code></blockquote>"
+    )
+    admin_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("❌ REJECT", callback_data=f"admin_reject_{payment_id}", style="danger"),
+        InlineKeyboardButton("✅ APPROVE", callback_data=f"admin_approve_{payment_id}", style="success")
+    ]])
+    for admin_id in ADMINS:
+        try:
+            await context.bot.send_message(admin_id, admin_msg, parse_mode="HTML", reply_markup=admin_kb)
+        except Exception as e:
+            print(f"Admin notify fail {admin_id}: {e}")
+
+async def process_withdraw_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    uid = query.from_user.id
+    await query.answer()
+    context.user_data["temp_withdraw"] = None
+    context.user_data["withdraw_mode"] = None
+    await query.message.edit_text("❌ WITHDRAW CANCELLED")
+    await context.bot.send_message(uid, tr(uid, "menu_prompt"), parse_mode="Markdown", reply_markup=main_keyboard(uid))
+
+# ==================== ADMIN PANEL - WITHDRAW APPROVAL ====================
+
+async def admin_approve_withdraw(update, context, payment_id):
+    query = update.callback_query
+    await query.answer()
+    wr = load_withdraw_requests()
+    if payment_id not in wr:
+        await query.message.reply_text("⚠️ REQUEST NOT FOUND!")
+        return
+    rd = wr[payment_id]
+    uid = rd["user_id"]
+    method = rd["method"]
+    amount = rd["amount"]
+    payment_number = rd["number"]
+
+    current_status = rd.get("status")
+    if current_status in ("approved", "rejected"):
+        await query.answer(f"⚠️ Already {current_status}, no action taken.", show_alert=True)
+        return
+
+    wr[payment_id]["status"] = "approved"
+    save_withdraw_requests(wr)
+
+    try:
+        await context.bot.send_message(
+            uid,
+            f"🎉 <b>WITHDRAWAL APPROVED!</b>\n\n"
+            f"<blockquote>📝 METHOD: <code>{method}</code>\n"
+            f"📞 NUMBER: <code>{payment_number}</code>\n"
+            f"💰 AMOUNT: <code>{format_balance(amount)} BDT</code></blockquote>",
+            parse_mode="HTML"
+        )
+    except:
+        pass
+    await query.message.edit_text(
+        f"✅ APPROVED | User: {uid} | Amount: {format_balance(amount)} BDT",
+        reply_markup=None
+    )
+
+async def admin_reject_withdraw(update, context, payment_id):
+    query = update.callback_query
+    await query.answer()
+    wr = load_withdraw_requests()
+    if payment_id not in wr:
+        await query.message.reply_text("⚠️ REQUEST NOT FOUND!")
+        return
+    rd = wr[payment_id]
+    uid = rd["user_id"]
+    amount = rd["amount"]
+
+    current_status = rd.get("status")
+    if current_status in ("approved", "rejected"):
+        await query.answer(f"⚠️ Already {current_status}, no action taken.", show_alert=True)
+        return
+
+    wr[payment_id]["status"] = "rejected"
+    save_withdraw_requests(wr)
+
+    # Refund the deducted amount back to the user's balance
+    new_balance = await update_db_balance(uid, amount)
+
+    try:
+        await context.bot.send_message(
+            uid,
+            f"❌ <b>WITHDRAWAL REQUEST REJECTED</b>\n\n"
+            f"<blockquote>💰 AMOUNT REFUNDED: <code>{format_balance(amount)} BDT</code>\n"
+            f"💵 NEW BALANCE: <code>{format_balance(new_balance)} BDT</code></blockquote>\n\n"
+            f"Contact admin for more info.",
+            parse_mode="HTML"
+        )
+    except:
+        pass
+    await query.message.edit_text(
+        f"❌ REJECTED & REFUNDED | User: {uid} | Amount: {format_balance(amount)} BDT",
+        reply_markup=None
+    )
+
+# ==================== ADMIN PANEL - BALANCE MANAGEMENT ====================
+
+async def admin_add_balance_start(update, context):
+    context.user_data["add_balance_mode"] = True
+    context.user_data["remove_balance_mode"] = False
+    await update.message.reply_text("💰 SEND USER ID TO ADD BALANCE:")
+
+async def admin_remove_balance_start(update, context):
+    context.user_data["remove_balance_mode"] = True
+    context.user_data["add_balance_mode"] = False
+    await update.message.reply_text("💸 SEND USER ID TO REMOVE BALANCE:")
+
+async def process_add_balance_user(update, context):
+    uid_to_add = update.message.text.strip()
+    if not uid_to_add.isdigit():
+        await update.message.reply_text("❌ INVALID USER ID!")
+        return
+    uid_to_add_int = int(uid_to_add)
+    if not user_exists(uid_to_add_int):
+        await update.message.reply_text("❌ USER NOT FOUND!")
+        context.user_data["add_balance_mode"] = False
+        return
+    context.user_data["pending_add_user"] = uid_to_add_int
+    await update.message.reply_text("💵 SEND AMOUNT TO ADD:")
+
+async def process_remove_balance_user(update, context):
+    uid_to_remove = update.message.text.strip()
+    if not uid_to_remove.isdigit():
+        await update.message.reply_text("❌ INVALID USER ID!")
+        return
+    uid_to_remove_int = int(uid_to_remove)
+    if not user_exists(uid_to_remove_int):
+        await update.message.reply_text("❌ USER NOT FOUND!")
+        context.user_data["remove_balance_mode"] = False
+        return
+    context.user_data["pending_remove_user"] = uid_to_remove_int
+    await update.message.reply_text("💸 SEND AMOUNT TO REMOVE:")
+
+async def process_add_balance_amount(update, context):
+    try:
+        amount = float(update.message.text.strip())
+        if amount <= 0: raise ValueError
+    except:
+        await update.message.reply_text("❌ INVALID AMOUNT!")
+        return
+    uid = context.user_data.get("pending_add_user")
+    if not uid:
+        context.user_data["add_balance_mode"] = False
+        await update.message.reply_text("⚠️ SESSION EXPIRED.")
+        return
+    old_balance = get_user(uid).get("balance", 0)
+    new_balance = await update_db_balance(uid, amount)
+    await update.message.reply_text(
+        f"✅ **ADD BALANCE SUCCESSFUL**\n🆔 USER: `{uid}`\n"
+        f"💰 ADDED: `{format_balance(amount)} BDT`\n"
+        f"📈 NEW BALANCE: `{format_balance(new_balance)} BDT`",
+        parse_mode="Markdown"
+    )
+    try:
+        await context.bot.send_message(uid, f"🎉 ADMIN ADDED `{format_balance(amount)} BDT` TO YOUR ACCOUNT!\n💵 NEW BALANCE: `{format_balance(new_balance)} BDT`", parse_mode="Markdown")
+    except:
+        pass
+    context.user_data["add_balance_mode"] = False
+    context.user_data["pending_add_user"] = None
+
+async def process_remove_balance_amount(update, context):
+    try:
+        amount = float(update.message.text.strip())
+        if amount <= 0: raise ValueError
+    except:
+        await update.message.reply_text("❌ INVALID AMOUNT!")
+        return
+    uid = context.user_data.get("pending_remove_user")
+    if not uid:
+        context.user_data["remove_balance_mode"] = False
+        await update.message.reply_text("⚠️ SESSION EXPIRED.")
+        return
+    old_balance = get_user(uid).get("balance", 0)
+    if amount > old_balance:
+        await update.message.reply_text(f"❌ INSUFFICIENT BALANCE! Current: {format_balance(old_balance)} BDT")
+        context.user_data["remove_balance_mode"] = False
+        context.user_data["pending_remove_user"] = None
+        return
+    new_balance = await update_db_balance(uid, -amount)
+    await update.message.reply_text(
+        f"✅ **REMOVE BALANCE SUCCESSFUL**\n🆔 USER: `{uid}`\n"
+        f"💸 REMOVED: `{format_balance(amount)} BDT`\n"
+        f"📉 NEW BALANCE: `{format_balance(new_balance)} BDT`",
+        parse_mode="Markdown"
+    )
+    try:
+        await context.bot.send_message(uid, f"⚠️ ADMIN REMOVED `{format_balance(amount)} BDT` FROM YOUR ACCOUNT!\n💵 NEW BALANCE: `{format_balance(new_balance)} BDT`", parse_mode="Markdown")
+    except:
+        pass
+    context.user_data["remove_balance_mode"] = False
+    context.user_data["pending_remove_user"] = None
+
+# ==================== ADMIN PANEL - OTP RATE ====================
+
+async def admin_otp_rate_start(update, context):
+    context.user_data["otp_rate_mode"] = True
+    current = get_otp_rate()
+    await update.message.reply_text(
+        f"💱 CURRENT OTP RATE: `{current:.2f} BDT`\n\n💵 SEND THE NEW RATE (e.g. 0.60):",
+        parse_mode="Markdown",
+        reply_markup=cancel_keyboard()
+    )
+
+async def process_otp_rate_amount(update, context):
+    context.user_data["otp_rate_mode"] = False
+    try:
+        new_rate = float(update.message.text.strip())
+        if new_rate <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        await update.message.reply_text("❌ INVALID RATE! SEND A POSITIVE NUMBER, e.g. 0.60", reply_markup=system_config_keyboard())
+        return
+    set_otp_rate(new_rate)
+    await update.message.reply_text(
+        f"✅ **OTP RATE UPDATED**\n💱 NEW RATE: `{new_rate:.2f} BDT` PER OTP",
+        parse_mode="Markdown",
+        reply_markup=system_config_keyboard()
+    )
+
+# ==================== ADMIN PANEL - BAN/UNBAN ====================
+
+async def admin_ban_user_start(update, context):
+    context.user_data["admin_ban_mode"] = True
+    context.user_data["admin_unban_mode"] = False
+    await update.message.reply_text("🚫 SEND TELEGRAM ID TO BAN USER:")
+
+async def admin_unban_user_start(update, context):
+    context.user_data["admin_unban_mode"] = True
+    context.user_data["admin_ban_mode"] = False
+    await update.message.reply_text("🔓 SEND TELEGRAM ID TO UNBAN USER:")
+
+async def process_ban_user(update, context):
+    uid_to_ban = update.message.text.strip()
+    if not uid_to_ban.isdigit():
+        await update.message.reply_text("❌ INVALID USER ID!")
+        return
+    uid_to_ban_int = int(uid_to_ban)
+    if not user_exists(uid_to_ban_int):
+        await update.message.reply_text("❌ USER NOT FOUND!")
+        context.user_data["admin_ban_mode"] = False
+        return
+    if is_user_banned(uid_to_ban_int):
+        await update.message.reply_text("⚠️ USER IS ALREADY BANNED!")
+        context.user_data["admin_ban_mode"] = False
+        return
+    ban_user(uid_to_ban_int)
+    try:
+        await context.bot.send_message(uid_to_ban_int, "🚫 **YOU HAVE BEEN BANNED**\n📞 Contact support.", parse_mode="Markdown")
+    except:
+        pass
+    await update.message.reply_text(f"✅ USER `{uid_to_ban}` BANNED!", parse_mode="Markdown", reply_markup=system_config_keyboard())
+    context.user_data["admin_ban_mode"] = False
+
+async def process_unban_user(update, context):
+    uid_to_unban = update.message.text.strip()
+    if not uid_to_unban.isdigit():
+        await update.message.reply_text("❌ INVALID USER ID!")
+        return
+    uid_to_unban_int = int(uid_to_unban)
+    if not is_user_banned(uid_to_unban_int):
+        await update.message.reply_text("⚠️ THIS USER IS NOT BANNED!")
+        context.user_data["admin_unban_mode"] = False
+        return
+    unban_user(uid_to_unban_int)
+    try:
+        await context.bot.send_message(uid_to_unban_int, "✅ **YOU HAVE BEEN UNBANNED!** Use /start", parse_mode="Markdown")
+    except:
+        pass
+    await update.message.reply_text(f"✅ USER `{uid_to_unban}` UNBANNED!", parse_mode="Markdown", reply_markup=system_config_keyboard())
+    context.user_data["admin_unban_mode"] = False
+
+async def show_banned_users_list(update, context):
+    banned_list = load_banned_users()
+    if not banned_list:
+        await update.message.reply_text("📜 NO BANNED USERS.", reply_markup=system_config_keyboard())
+        return
+    text = "📜 **BANNED USER LIST**\n━━━━━━━━━━━━━━━━━━━━\n\n"
+    for i, uid in enumerate(banned_list, 1):
+        text += f"{i}. `{uid}`\n"
+    text += f"\n📊 Total: {len(banned_list)}"
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=system_config_keyboard())
+
+# ==================== ADMIN PANEL - SERVICE ON/OFF MANAGEMENT ====================
+
+def _build_manage_services_rows(services):
+    disabled = get_disabled_services()
+    buttons = []
+    for i, svc in enumerate(services):
+        sid = svc.get("sid", f"Service {i+1}")
+        is_off = sid in disabled
+        status = "❌" if is_off else "✅"
+        buttons.append(InlineKeyboardButton(
+            f"{status} {sid}",
+            callback_data=f"togsvc_{i}",
+            style=("danger" if is_off else "success")
+        ))
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    cur = get_service_design()
+    design_row = [
+        InlineKeyboardButton(("✅ " if n == cur else "") + f"DESIGN V{n}",
+                             callback_data=f"svcdesign_{n}",
+                             style=("success" if n == cur else "primary"))
+        for n in SERVICE_DESIGN_NAMES
+    ]
+    rows.insert(0, design_row)
+    rows.append([InlineKeyboardButton("🔙 CLOSE", callback_data="close_admin_menu", style="danger")])
+    return rows
+
+async def show_manage_services_menu(update, context):
+    services = get_cached_services()
+    if not services:
+        await _do_liveaccess_fetch()
+        services = get_cached_services()
+    if not services:
+        await update.message.reply_text(
+            "⚠️ No services are loaded yet. Please try again in a moment.",
+            reply_markup=system_config_keyboard()
+        )
+        return
+    context.user_data["admin_svc_list"] = services
+    rows = _build_manage_services_rows(services)
+    await update.message.reply_text(
+        "📡 <b>MANAGE SERVICES</b>\n\n"
+        "<blockquote>✅ = shown to users | ❌ = hidden from users\n"
+        "Tap a service to enable/disable it in GET NUMBER.\n\n"
+        "🎨 DESIGN V1 = Classic | V2 = Icons | V3 = Bars\n"
+        "Tap a design to change how GET NUMBER looks.</blockquote>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+# ==================== ADMIN PANEL - PAYMENT SETUP ====================
+
+def _build_payment_management_rows():
+    flags = get_payment_flags()
+    buttons = []
+    for key, label in PAYMENT_METHOD_LABELS.items():
+        enabled = flags.get(key, True)
+        status = "✅" if enabled else "❌"
+        buttons.append(InlineKeyboardButton(
+            f"{status} {label}",
+            callback_data=f"togpay_{key}",
+            style=("success" if enabled else "danger")
+        ))
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("📉 MINIMUM WITHDRAW LIMITS", callback_data="minwd_menu", style="primary")])
+    rows.append([InlineKeyboardButton("🔙 CLOSE", callback_data="close_admin_menu", style="danger")])
+    return rows
+
+def _build_min_withdraw_menu_rows():
+    amounts = get_min_withdraw_map()
+    buttons = [
+        InlineKeyboardButton(f"{PAYMENT_METHOD_LABELS[key]}: {amounts[key]:.0f} BDT", callback_data=f"selminwd_{key}", style="primary")
+        for key in PAYMENT_METHOD_LABELS
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("🔙 BACK", callback_data="minwd_back", style="danger")])
+    return rows
+
+async def show_payment_management_menu(update, context):
+    rows = _build_payment_management_rows()
+    await update.message.reply_text(
+        "💳 <b>PAYMENT SETUP</b>\n\n"
+        "<blockquote>✅ = shown to users | ❌ = hidden from withdraw list\n"
+        "Tap a payment method to turn it on/off, or tap MINIMUM WITHDRAW LIMITS to set each method's own minimum.</blockquote>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+async def admin_min_withdraw_start(update, context, key):
+    context.user_data["min_withdraw_mode"] = True
+    context.user_data["min_withdraw_target"] = key
+    current = get_min_withdraw(key)
+    await update.effective_message.reply_text(
+        f"📉 {PAYMENT_METHOD_LABELS[key]} — CURRENT MINIMUM WITHDRAW: `{current:.0f} BDT`\n\n💵 SEND THE NEW MINIMUM (e.g. 50):",
+        parse_mode="Markdown",
+        reply_markup=cancel_keyboard()
+    )
+
+async def process_min_withdraw_amount(update, context):
+    context.user_data["min_withdraw_mode"] = False
+    key = context.user_data.get("min_withdraw_target")
+    context.user_data["min_withdraw_target"] = None
+    if key not in PAYMENT_METHOD_LABELS:
+        await update.message.reply_text("⚠️ Session expired — please reopen MINIMUM WITHDRAW LIMITS.", reply_markup=admin_main_keyboard())
+        return
+    try:
+        new_amount = float(update.message.text.strip())
+        if new_amount <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        await update.message.reply_text("❌ INVALID AMOUNT! SEND A POSITIVE NUMBER, e.g. 50", reply_markup=admin_main_keyboard())
+        return
+    set_min_withdraw(key, new_amount)
+    await update.message.reply_text(
+        f"✅ **MINIMUM WITHDRAW UPDATED**\n{PAYMENT_METHOD_LABELS[key]} — NEW MINIMUM: `{new_amount:.0f} BDT`",
+        parse_mode="Markdown",
+        reply_markup=admin_main_keyboard()
+    )
+
+# ==================== ADMIN PANEL - MAIN MENU BUTTON MANAGEMENT ====================
+
+def _build_manage_buttons_rows():
+    flags = get_button_flags()
+    buttons = []
+    for key, label in BUTTON_FLAG_LABELS.items():
+        enabled = flags.get(key, True)
+        status = "✅" if enabled else "❌"
+        buttons.append(InlineKeyboardButton(
+            f"{status} {label}",
+            callback_data=f"togbtn_{key}",
+            style=("success" if enabled else "danger")
+        ))
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("🔙 CLOSE", callback_data="close_admin_menu", style="danger")])
+    return rows
+
+async def show_manage_buttons_menu(update, context):
+    rows = _build_manage_buttons_rows()
+    await update.message.reply_text(
+        "🔘 <b>MANAGE BUTTONS</b>\n\n"
+        "<blockquote>✅ = visible in main menu | ❌ = hidden from main menu\n"
+        "Tap a button to show/hide it for users.</blockquote>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+# ==================== ADMIN PANEL - NUMBER MANAGE ====================
+
+def _build_number_manage_rows():
+    on = is_old_number_delete_on()
+    v2 = is_number_template_v2_on()
+    return [
+        [InlineKeyboardButton(
+            f"{'✅' if on else '❌'} OLD NUMBER DELETE: {'ON' if on else 'OFF'}",
+            callback_data="togoldnum",
+            style=("success" if on else "danger")
+        )],
+        [InlineKeyboardButton(
+            f"{'✅' if v2 else '❌'} NUMBER TEMPLATE V2: {'ON' if v2 else 'OFF'}",
+            callback_data="togtplv2",
+            style=("success" if v2 else "danger")
+        )],
+        [InlineKeyboardButton("🔙 CLOSE", callback_data="close_admin_menu", style="danger")]
+    ]
+
+async def show_number_manage_menu(update, context):
+    await update.message.reply_text(
+        "🔢 <b>NUMBER MANAGE</b>\n\n"
+        "<blockquote>❌ OFF (default) = old number stays above when a user gets a NEW NUMBER\n"
+        "✅ ON = old number message is deleted automatically when a user gets a NEW NUMBER</blockquote>\n\n"
+        "<blockquote>🧾 <b>NUMBER TEMPLATE V2</b>\n"
+        "❌ OFF (default) = normal message (country, range, number, status)\n"
+        "✅ ON = flag + NEW NUMBER header, platform button, number as a one-tap copy button, CHANGE COUNTRY, NEW NUMBER / OTP GROUP buttons, and a neat OTP RECEIVED message</blockquote>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(_build_number_manage_rows())
+    )
+
+# ==================== ADMIN PANEL - REFER CONTROL ====================
+
+def _build_refer_control_rows():
+    on = is_ref_commission_on()
+    return [
+        [InlineKeyboardButton(f"🎁 REFER BONUS: {get_referral_bonus():.2f} BDT ✏️", callback_data="refctl_bonus", style="primary")],
+        [InlineKeyboardButton(f"{'✅' if on else '❌'} OTP COMMISSION: {'ON' if on else 'OFF'}", callback_data="refctl_tog", style=("success" if on else "danger"))],
+        [InlineKeyboardButton(f"💰 COMMISSION PER OTP: {get_ref_commission():.2f} BDT ✏️", callback_data="refctl_comm", style="primary")],
+        [InlineKeyboardButton("🔙 CLOSE", callback_data="close_admin_menu", style="danger")]
+    ]
+
+def _refer_control_text():
+    return (
+        "🎁 <b>REFER CONTROL</b>\n\n"
+        f"<blockquote>🎁 <b>REFER BONUS</b>\nA new user joins with someone's link → that person gets {get_referral_bonus():.2f} BDT.</blockquote>\n\n"
+        f"<blockquote>💸 <b>OTP COMMISSION</b> (OFF by default)\nEvery successful OTP of a referred user pays the referrer {get_ref_commission():.2f} BDT extra (paid by the bot, not taken from the user).</blockquote>"
+    )
+
+async def show_refer_control_menu(update, context):
+    await update.message.reply_text(
+        _refer_control_text(), parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(_build_refer_control_rows())
+    )
+
+_REF_INPUT = {
+    "bonus": ("referral_bonus", "REFER BONUS"),
+    "comm": ("ref_commission", "COMMISSION PER OTP"),
+}
+
+async def process_ref_input(update, context):
+    key = context.user_data.get("ref_input")
+    context.user_data["ref_input"] = None
+    setting, label = _REF_INPUT[key]
+    try:
+        value = float(update.message.text.strip())
+        if value < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        await update.message.reply_text("❌ INVALID AMOUNT! SEND A NUMBER, e.g. 0.50", reply_markup=system_config_keyboard())
+        return
+    set_ref_setting(setting, value)
+    await update.message.reply_text(f"✅ {label} UPDATED: {value:.2f} BDT", reply_markup=system_config_keyboard())
+    await show_refer_control_menu(update, context)
+
+# ==================== MESSAGE HANDLER SECTION ====================
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    uid = update.effective_user.id
+    await remember_user_name(update.effective_user)
+    text = update.message.text.strip()
+
+    # FIX: escape hatch for "BACK TO ADMIN" / "BACK TO MAIN" — must be checked
+    # BEFORE any admin mode flags below, otherwise the button text itself gets
+    # swallowed as invalid input (e.g. "invalid user id") and the mode flag
+    # never gets cleared, permanently locking the admin out of that section.
+    if text in ("🔙 BACK TO ADMIN", "🔙 BACK TO MAIN") and is_admin(uid):
+        context.user_data["admin_ban_mode"] = False
+        context.user_data["admin_unban_mode"] = False
+        context.user_data["add_balance_mode"] = False
+        context.user_data["remove_balance_mode"] = False
+        context.user_data["pending_add_user"] = None
+        context.user_data["pending_remove_user"] = None
+        context.user_data["otp_rate_mode"] = False
+        context.user_data["ref_input"] = None
+        context.user_data["min_withdraw_mode"] = False
+        context.user_data["min_withdraw_target"] = None
+        context.user_data["mode"] = None
+        context.user_data["broadcast_mode"] = False
+
+        if text == "🔙 BACK TO ADMIN":
+            context.user_data["user_management_mode"] = None
+            context.user_data["system_config_mode"] = None
+            context.user_data["admin_mode"] = "main"
+            await update.message.reply_text("🔙 Back to admin panel.", reply_markup=admin_main_keyboard())
+        else:
+            context.user_data["admin_mode"] = None
+            await update.message.reply_text("🔙 Back to main menu.", reply_markup=main_keyboard(uid))
+        return
+
+    # Withdraw flow
+    if context.user_data.get("withdraw_mode") == "select_method":
+        await withdraw_method_selected(update, context)
+        return
+    if context.user_data.get("withdraw_mode") == "amount":
+        await withdraw_amount_received(update, context)
+        return
+    if context.user_data.get("withdraw_mode") == "number":
+        await withdraw_number_received(update, context)
+        return
+
+    # Admin balance
+    if context.user_data.get("add_balance_mode") and is_admin(uid):
+        if context.user_data.get("pending_add_user"):
+            await process_add_balance_amount(update, context)
+        else:
+            await process_add_balance_user(update, context)
+        return
+    if context.user_data.get("remove_balance_mode") and is_admin(uid):
+        if context.user_data.get("pending_remove_user"):
+            await process_remove_balance_amount(update, context)
+        else:
+            await process_remove_balance_user(update, context)
+        return
+    if context.user_data.get("ref_input") and is_admin(uid):
+        await process_ref_input(update, context)
+        return
+    if context.user_data.get("otp_rate_mode") and is_admin(uid):
+        await process_otp_rate_amount(update, context)
+        return
+    if context.user_data.get("min_withdraw_mode") and is_admin(uid):
+        await process_min_withdraw_amount(update, context)
+        return
+
+    # Admin ban/unban
+    if context.user_data.get("admin_ban_mode") and is_admin(uid):
+        await process_ban_user(update, context)
+        return
+    if context.user_data.get("admin_unban_mode") and is_admin(uid):
+        await process_unban_user(update, context)
+        return
+
+    # CUSTOM RANGE — user sent a range text
+    if context.user_data.get("mode") == "custom_range":
+        context.user_data["mode"] = None
+        range_text = text.strip().upper()
+        if not re.search(r'\d', range_text):
+            await update.message.reply_text(
+                "❌ <b>INVALID RANGE!</b>\n\n"
+                "<blockquote>Correct example: <code>234XXX</code></blockquote>",
+                parse_mode="HTML",
+                reply_markup=main_keyboard(uid)
+            )
+            return
+        await request_queue.put({
+            'type': 'process_numbers',
+            'update': update,
+            'context': context,
+            'range_text': range_text,
+            'count': 1
+        })
+        return
+
+    # Ban check
+    if not is_admin(uid) and is_user_banned(uid):
+        await update.message.reply_text(tr(uid, "banned"), reply_markup=main_keyboard(uid))
+        return
+
+    # Cancel
+    if text == "❌ CANCEL":
+        context.user_data.clear()
+        await update.message.reply_text("❌ CANCELLED", reply_markup=main_keyboard(uid))
+        return
+
+    # Main menu buttons
+    if is_menu_btn(text, "btn_profile") and is_button_enabled("btn_profile"):
+        user_data = get_user(uid)
+        stats = get_user_stats(uid)
+        user = update.effective_user
+        full_name = html.escape(user.full_name)
+        username = html.escape(user.username or tr(uid, "no_username"))
+        profile_text = (
+            f"{tr(uid, 'profile_title')}\n\n"
+            f"<blockquote>🏷️ {tr(uid, 'profile_name')}: <b>{full_name}</b></blockquote>\n"
+            f"<blockquote>🆔 {tr(uid, 'profile_username')}: @{username}</blockquote>\n"
+            f"<blockquote>🗝️ {tr(uid, 'profile_id')}: <code>{uid}</code></blockquote>\n\n"
+            f"<blockquote>💵 {tr(uid, 'profile_balance')}: <b>{format_balance(user_data.get('balance', 0))} BDT</b></blockquote>\n\n"
+            f"✨ <b>{tr(uid, 'profile_today')}</b>\n"
+            f"<blockquote>📱 {tr(uid, 'profile_numbers')}: {stats['today_numbers']}\n🔑 {tr(uid, 'profile_otps')}: {stats['today_otps']}</blockquote>\n\n"
+            f"🔥 <b>{tr(uid, 'profile_7d')}</b>\n"
+            f"<blockquote>📱 {tr(uid, 'profile_numbers')}: {stats['last7d_numbers']}\n🔑 {tr(uid, 'profile_otps')}: {stats['last7d_otps']}</blockquote>\n\n"
+            f"🌐 <b>{tr(uid, 'profile_all')}</b>\n"
+            f"<blockquote>📱 {tr(uid, 'profile_numbers')}: {stats['total_numbers']}\n🔑 {tr(uid, 'profile_otps')}: {stats['total_otps']}</blockquote>"
+        )
+        await update.message.reply_text(
+            profile_text, parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(tr(uid, "btn_language"), callback_data="lang_menu", style="primary")
+            ]])
+        )
+        return
+
+    if is_menu_btn(text, "btn_balance"):
+        balance = get_user(uid)['balance']
+        await update.message.reply_text(
+            f"{tr(uid, 'balance_title')}\n\n"
+            f"<blockquote>💵 {tr(uid, 'balance_total')}: <b>{format_balance(balance)} BDT</b></blockquote>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(tr(uid, "btn_withdraw"), callback_data="withdraw_start", style="primary")
+            ]])
+        )
+        return
+
+    if is_menu_btn(text, "btn_refer"):
+        await refer_command(update, context)
+        return
+
+    # SEARCH OTP
+    if is_menu_btn(text, "btn_search_otp") and is_button_enabled("btn_search_otp"):
+        context.user_data["mode"] = "search_otp"
+        await update.message.reply_text(tr(uid, "search_otp_prompt"), parse_mode="Markdown")
+        return
+
+    if context.user_data.get("mode") == "search_otp":
+        context.user_data["mode"] = None
+        await request_queue.put({'type': 'search_otp', 'update': update, 'context': context, 'target_num': normalize_number(text)})
+        return
+
+    # GET 2FA
+    if is_menu_btn(text, "btn_2fa") and is_button_enabled("btn_2fa"):
+        await get_2fa_code(update, context)
+        return
+
+    # GET NUMBER
+    if is_menu_btn(text, "btn_get_number"):
+        await show_app_selection(update, context)
+        return
+
+    if context.user_data.get("mode") == "get_2fa":
+        await process_2fa_key(update, context)
+        return
+
+    # LEADERBOARD
+    if is_menu_btn(text, "btn_leaderboard") and is_button_enabled("btn_leaderboard"):
+        await leaderboard_command(update, context)
+        return
+
+    # TRAFFIC
+    if is_menu_btn(text, "btn_traffic") and is_button_enabled("btn_traffic"):
+        await traffic_command(update, context)
+        return
+
+    # SUPPORT BUTTON HANDLER
+    if is_menu_btn(text, "btn_support") and is_button_enabled("btn_support"):
+        support_text = tr(uid, "support_text")
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(tr(uid, "btn_support_inline"), url=SUPPORT_LINK, style="primary")],
+            [InlineKeyboardButton(tr(uid, "btn_developer"), url=DEVELOPER_LINK, style="danger")],
+            [InlineKeyboardButton(tr(uid, "btn_active_range"), url=RANGE_GROUP_LINK, style="success")]
+        ])
+        await update.message.reply_text(support_text, reply_markup=keyboard, parse_mode="Markdown")
+        return
+
+    # Admin panel
+    if is_menu_btn(text, "btn_admin_panel") and is_admin(uid):
+        context.user_data["admin_mode"] = "main"
+        await update.message.reply_text(
+            "⌬━━━━━━━━━━━━━━━━━━━━⌬\n   WELCOME ADMIN PANEL\n⌬━━━━━━━━━━━━━━━━━━━━⌬",
+            reply_markup=admin_main_keyboard()
+        )
+        return
+
+    if text == "🔙 BACK TO MAIN" and context.user_data.get("admin_mode"):
+        context.user_data["admin_mode"] = None
+        await update.message.reply_text("🔙 Back to main menu.", reply_markup=main_keyboard(uid))
+        return
+
+    if text == "🔙 BACK TO ADMIN":
+        context.user_data["user_management_mode"] = None
+        context.user_data["system_config_mode"] = None
+        context.user_data["admin_mode"] = "main"
+        await update.message.reply_text("🔙 Back to admin panel.", reply_markup=admin_main_keyboard())
+        return
+
+    if text == "👥 USER MANAGEMENT" and context.user_data.get("admin_mode") == "main" and is_admin(uid):
+        context.user_data["user_management_mode"] = "main"
+        await update.message.reply_text("👥 User Management:", reply_markup=user_management_keyboard())
+        return
+
+    if text == "⚙️ SYSTEM CONFIGURATION" and context.user_data.get("admin_mode") == "main" and is_admin(uid):
+        context.user_data["system_config_mode"] = "main"
+        await update.message.reply_text("⚙️ System Configuration:", reply_markup=system_config_keyboard())
+        return
+
+    if text == "💳 PAYMENT SETUP" and context.user_data.get("admin_mode") == "main" and is_admin(uid):
+        await show_payment_management_menu(update, context)
+        return
+
+    if text == "📈 TODAY ALL STATUS" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
+        t_n, t_o, s_n, s_o, tot_n, tot_o = get_global_system_stats()
+        msg = (
+            f"📊 <b>SYSTEM STATUS</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"✨ <b>TODAY</b>\n📱 NUMBERS: {t_n}\n🔑 OTPS: {t_o}\n\n"
+            f"🔥 <b>LAST 7 DAYS</b>\n📱 NUMBERS: {s_n}\n🔑 OTPS: {s_o}\n\n"
+            f"🌐 <b>ALL TIME</b>\n📱 NUMBERS: {tot_n}\n🔑 OTPS: {tot_o}"
+        )
+        await update.message.reply_text(msg, parse_mode="HTML")
+        return
+
+    if text == "👤 USER STATUS CHECK" and is_admin(uid):
+        context.user_data["mode"] = "input_user_id"
+        await update.message.reply_text("🔍 ENTER TELEGRAM ID:", reply_markup=cancel_keyboard())
+        return
+
+    if context.user_data.get("mode") == "input_user_id" and is_admin(uid):
+        target_uid = text.strip()
+        if not target_uid.isdigit():
+            await update.message.reply_text("❌ INVALID ID!")
+            return
+        context.user_data["mode"] = None
+        stats = get_user_stats(target_uid)
+        msg = (
+            f"👤 <b>USER STATUS</b> — <code>{target_uid}</code>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"✨ TODAY: 📱 {stats['today_numbers']} | 🔑 {stats['today_otps']}\n"
+            f"🔥 7 DAYS: 📱 {stats['last7d_numbers']} | 🔑 {stats['last7d_otps']}\n"
+            f"🌐 ALL TIME: 📱 {stats['total_numbers']} | 🔑 {stats['total_otps']}"
+        )
+        await update.message.reply_text(
+            msg, parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📂 CHECK ALL DATA", callback_data=f"full_logs_{target_uid}", style="primary")
+            ]])
+        )
+        return
+
+    if text == "🆔 ALL USER ID" and context.user_data.get("user_management_mode") == "main" and is_admin(uid):
+        users = get_all_users()
+        if users:
+            content = "\n".join(f"{i}. {u}" for i, u in enumerate(users, 1))
+            f = io.BytesIO(content.encode()); f.name = f"ALL_USERS_{len(users)}.txt"
+            await update.message.reply_document(document=f, caption=f"👥 Total Users: {len(users)}", reply_markup=user_management_keyboard())
+        else:
+            await update.message.reply_text("No users found.", reply_markup=user_management_keyboard())
+        return
+
+    if text == "💰 ALL USER BALANCE" and context.user_data.get("user_management_mode") == "main" and is_admin(uid):
+        user_db = load_data(USER_DATA_FILE)
+        if user_db:
+            total_bal = sum(v.get("balance", 0) for v in user_db.values())
+            lines = [f"{i}. {uid_}: {v.get('balance', 0):.2f} BDT" for i, (uid_, v) in enumerate(user_db.items(), 1)]
+            content = f"💰 TOTAL BALANCE: {total_bal:.2f} BDT\n\n" + "\n".join(lines)
+            f = io.BytesIO(content.encode()); f.name = f"BALANCES_{total_bal:.0f}.txt"
+            await update.message.reply_document(document=f, caption=f"💵 Total Balance: {total_bal:.2f} BDT", reply_markup=user_management_keyboard())
+        else:
+            await update.message.reply_text("No data.", reply_markup=user_management_keyboard())
+        return
+
+    if text == "📜 BAN USER LIST" and is_admin(uid):
+        await show_banned_users_list(update, context)
+        return
+
+    if text == "⛔ BAN USER" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
+        await admin_ban_user_start(update, context)
+        return
+
+    if text == "🔓 UNBAN USER" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
+        await admin_unban_user_start(update, context)
+        return
+
+    if text == "➕ ADD BALANCE" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
+        await admin_add_balance_start(update, context)
+        return
+
+    if text == "➖ REMOVE BALANCE" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
+        await admin_remove_balance_start(update, context)
+        return
+
+    if text == "💱 OTP RATE" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
+        await admin_otp_rate_start(update, context)
+        return
+
+    if text == "📡 MANAGE SERVICES" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
+        await show_manage_services_menu(update, context)
+        return
+
+    if text == "🔘 MANAGE BUTTONS" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
+        await show_manage_buttons_menu(update, context)
+        return
+
+    if text == "🎁 REFER CONTROL" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
+        await show_refer_control_menu(update, context)
+        return
+
+    if text == "🔢 NUMBER MANAGE" and context.user_data.get("system_config_mode") == "main" and is_admin(uid):
+        await show_number_manage_menu(update, context)
+        return
+
+    # ==================== FIXED BROADCAST (TEXT, PHOTO, VIDEO, FILE, ETC.) ====================
+    if text == "📢 BROADCAST" and is_admin(uid):
+        context.user_data["broadcast_mode"] = True
+        await update.message.reply_text(
+            "📢 <b>ADMIN BROADCAST SYSTEM (PRO)</b>\n\n"
+            "💬 Whatever you send now (Text, Photo, Video, Document, Voice, Audio, Animation, Sticker) will go out to all users with a professional header.\n\n"
+            "✨ If it contains a range (e.g. 237XXX), it will automatically become click-to-copy.", 
+            parse_mode="HTML", 
+            reply_markup=cancel_keyboard()
+        )
+        return
+
+    if context.user_data.get("broadcast_mode") and is_admin(uid):
+        context.user_data["broadcast_mode"] = False
+        
+        user_db = load_data(USER_DATA_FILE)
+        all_uids = list(user_db.keys())
+        
+        if not all_uids:
+            await update.message.reply_text("❌ No users found to send to!")
+            return
+
+        success_ids, fail_ids = [], []
+        status_msg = await update.message.reply_text(f"🚀 <b>Broadcast started...</b>\n🎯 Target: {len(all_uids)} users.", parse_mode="HTML")
+
+        def format_broadcast_caption(caption_text):
+            if not caption_text:
+                return "<blockquote>📢 <b>ADMIN NOTICE :</b></blockquote>"
+            formatted = re.sub(r'(\d{3,}[xX]{3,})', r'<code>\1</code>', str(caption_text))
+            return f"<blockquote>📢 <b>ADMIN NOTICE :</b></blockquote>\n\n{formatted}"
+
+        for user_id_str in all_uids:
+            try:
+                target_id = int(user_id_str)
+                
+                # Text message
+                if update.message.text:
+                    await context.bot.send_message(
+                        chat_id=target_id, 
+                        text=format_broadcast_caption(update.message.text), 
+                        parse_mode="HTML"
+                    )
+                # Photo
+                elif update.message.photo:
+                    caption = format_broadcast_caption(update.message.caption) if update.message.caption else None
+                    await context.bot.send_photo(
+                        chat_id=target_id,
+                        photo=update.message.photo[-1].file_id,
+                        caption=caption,
+                        parse_mode="HTML" if caption else None
+                    )
+                # Video
+                elif update.message.video:
+                    caption = format_broadcast_caption(update.message.caption) if update.message.caption else None
+                    await context.bot.send_video(
+                        chat_id=target_id,
+                        video=update.message.video.file_id,
+                        caption=caption,
+                        parse_mode="HTML" if caption else None
+                    )
+                # Document (any file)
+                elif update.message.document:
+                    caption = format_broadcast_caption(update.message.caption) if update.message.caption else None
+                    await context.bot.send_document(
+                        chat_id=target_id,
+                        document=update.message.document.file_id,
+                        caption=caption,
+                        parse_mode="HTML" if caption else None
+                    )
+                # Audio
+                elif update.message.audio:
+                    caption = format_broadcast_caption(update.message.caption) if update.message.caption else None
+                    await context.bot.send_audio(
+                        chat_id=target_id,
+                        audio=update.message.audio.file_id,
+                        caption=caption,
+                        parse_mode="HTML" if caption else None
+                    )
+                # Voice
+                elif update.message.voice:
+                    caption = format_broadcast_caption(update.message.caption) if update.message.caption else None
+                    await context.bot.send_voice(
+                        chat_id=target_id,
+                        voice=update.message.voice.file_id,
+                        caption=caption,
+                        parse_mode="HTML" if caption else None
+                    )
+                # Animation (GIF)
+                elif update.message.animation:
+                    caption = format_broadcast_caption(update.message.caption) if update.message.caption else None
+                    await context.bot.send_animation(
+                        chat_id=target_id,
+                        animation=update.message.animation.file_id,
+                        caption=caption,
+                        parse_mode="HTML" if caption else None
+                    )
+                # Sticker
+                elif update.message.sticker:
+                    await context.bot.send_sticker(
+                        chat_id=target_id,
+                        sticker=update.message.sticker.file_id
+                    )
+                # Everything else (forward/copy)
+                else:
+                    try:
+                        await context.bot.copy_message(
+                            chat_id=target_id,
+                            from_chat_id=update.message.chat_id,
+                            message_id=update.message.message_id
+                        )
+                    except:
+                        await context.bot.send_message(
+                            chat_id=target_id,
+                            text="📢 <b>ADMIN NOTICE :</b>\n\nYou have a new message, but it could not be displayed.",
+                            parse_mode="HTML"
+                        )
+                success_ids.append(user_id_str)
+            except Exception as e:
+                print(f"Broadcast fail to {user_id_str}: {e}")
+                fail_ids.append(user_id_str)
+            
+            await asyncio.sleep(0.05)
+
+        report_text = (
+            f"✅ <b>ADMIN NOTICE COMPLETE !</b>\n\n"
+            f"📊 <b>BROADCAST REPORT:</b>\n\n"
+            f"<blockquote>✅ SUCCESSFULLY SENT: {len(success_ids)} USERS !</blockquote>\n"
+            f"<blockquote>❌ FAILED TO SEND: {len(fail_ids)} USERS !</blockquote>"
+        )
+        
+        await status_msg.delete()
+        await context.bot.send_message(chat_id=uid, text=report_text, parse_mode="HTML", reply_markup=main_keyboard(uid))
+
+        random_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
+        if success_ids:
+            s_file = io.BytesIO(("\n".join(success_ids)).encode()); s_file.name = f"SUCCESS_{random_suffix}.txt"
+            await context.bot.send_document(chat_id=uid, document=s_file, caption="✅ Success User List")
+        if fail_ids:
+            f_file = io.BytesIO(("\n".join(fail_ids)).encode()); f_file.name = f"FAILED_{random_suffix}.txt"
+            await context.bot.send_document(chat_id=uid, document=f_file, caption="❌ Failed User List")
+        
+        return
+
+    await update.message.reply_text(tr(uid, "menu_prompt"), parse_mode="Markdown", reply_markup=main_keyboard(uid))
+
+# ==================== COMMAND HANDLERS SECTION ====================
+
+async def get1number_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if is_user_banned(uid):
+        await update.message.reply_text(tr(uid, "banned"), reply_markup=main_keyboard(uid))
+        return
+    await show_app_selection(update, context)
+
+async def searchotp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if is_user_banned(uid):
+        await update.message.reply_text(tr(uid, "banned"), reply_markup=main_keyboard(uid))
+        return
+    context.user_data["mode"] = "search_otp"
+    await update.message.reply_text("🔍 **ENTER THE NUMBER TO SEARCH OTP:**", parse_mode="Markdown")
+
+async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if is_user_banned(uid):
+        await update.message.reply_text(tr(uid, "banned"), reply_markup=main_keyboard(uid))
+        return
+    balance = get_user(uid)['balance']
+    await update.message.reply_text(f"💰 BALANCE: `{format_balance(balance)} BDT`", parse_mode="Markdown", reply_markup=main_keyboard(uid))
+
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if is_user_banned(uid):
+        await update.message.reply_text(tr(uid, "banned"), reply_markup=main_keyboard(uid))
+        return
+    user_data = get_user(uid)
+    stats = get_user_stats(uid)
+    user = update.effective_user
+    username = user.username or tr(uid, "no_username")
+    profile_text = (
+        f"{tr(uid, 'profile_title')}\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🏷️ {tr(uid, 'profile_name')}: `{user.full_name}`\n"
+        f"🆔 {tr(uid, 'profile_username')}: @{username}\n"
+        f"🗝️ {tr(uid, 'profile_id')}: `{uid}`\n\n"
+        f"💵 {tr(uid, 'profile_balance')}: {format_balance(user_data.get('balance', 0))} BDT\n\n"
+        f"✨ {tr(uid, 'profile_today')}: 📱 {stats['today_numbers']} | 🔑 {stats['today_otps']}\n"
+        f"🔥 {tr(uid, 'profile_7d')}: 📱 {stats['last7d_numbers']} | 🔑 {stats['last7d_otps']}\n"
+        f"🌐 {tr(uid, 'profile_all')}: 📱 {stats['total_numbers']} | 🔑 {stats['total_otps']}"
+    )
+    await update.message.reply_text(
+        profile_text, parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(tr(uid, "btn_language"), callback_data="lang_menu", style="primary")
+        ]])
+    )
+
+async def refer_command_slash(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if is_user_banned(uid):
+        await update.message.reply_text(tr(uid, "banned"), reply_markup=main_keyboard(uid))
+        return
+    await refer_command(update, context)
+
+async def leaderboard_command_slash(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if is_user_banned(uid):
+        await update.message.reply_text(tr(uid, "banned"), reply_markup=main_keyboard(uid))
+        return
+    await leaderboard_command(update, context)
+
+# ==================== START & CALLBACK SECTION ====================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    uid_str = str(uid)
+
+    async with balance_lock:
+        existing_data = load_data(USER_DATA_FILE)
+        is_new_user = uid_str not in existing_data
+        if is_new_user:
+            existing_data[uid_str] = {"user_id": uid_str, "balance": 0.0, "total_numbers": 0, "referral_count": 0}
+            save_data(existing_data)
+    await remember_user_name(update.effective_user)
+
+    args = context.args
+    if args:
+        param = args[0]
+        if is_referral_request(param):
+            print(f"[referral] user={uid} param={param} new_user={is_new_user} referrer_found={param in existing_data}")
+        if is_range_request(param):
+            await request_queue.put({'type': 'auto_number', 'update': update, 'context': context, 'range_text': param})
+            return
+        elif is_referral_request(param) and is_new_user:
+            try:
+                referrer_id = int(param)
+                if referrer_id != uid and str(referrer_id) in existing_data:
+                    current_count = get_referral_count(referrer_id)
+                    new_count = current_count + 1
+                    update_referral_count(referrer_id, new_count)
+                    _rd = load_referral_data()
+                    _rd.setdefault(str(referrer_id), {"referral_count": new_count}).setdefault("referred", []).append(
+                        {"id": str(uid), "time": datetime.now().isoformat()})
+                    save_referral_data(_rd)
+                    bonus = get_referral_bonus()
+                    await update_db_balance(referrer_id, bonus)
+                    add_referral_earning(referrer_id, bonus)
+                    async with balance_lock:
+                        _ud = load_data(USER_DATA_FILE)
+                        if uid_str in _ud:
+                            _ud[uid_str]["referred_by"] = str(referrer_id)
+                            save_data(_ud)
+                    log_global_activity(referrer_id, "REFERRAL_JOINED", {"referred_user": uid})
+                    try:
+                        await context.bot.send_message(
+                            referrer_id,
+                            f"🎉 <b>NEW REFERRAL!</b>\n\n<blockquote>🗝️ ID: <code>{uid}</code>\n💰 REWARD: {format_balance(bonus)} BDT\n👥 TOTAL REFERS: {new_count}</blockquote>",
+                            parse_mode="HTML"
+                        )
+                    except:
+                        pass
+            except Exception as e:
+                print(f"Referral error: {e}")
+
+    context.user_data.clear()
+    await update.message.reply_text(tr(uid, "welcome"), parse_mode="Markdown")
+    await update.message.reply_text(tr(uid, "menu_prompt"), parse_mode="Markdown", reply_markup=main_keyboard(uid))
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    uid = query.from_user.id
+    data = query.data
+    await query.answer()
+
+    if not is_admin(uid) and is_user_banned(uid):
+        await query.edit_message_text(tr(uid, "banned"))
+        return
+
+    # platform button on the V2 number message (display only)
+    if data == "noop_svc":
+        return
+
+    # ==================== ADMIN — CLOSE AN INLINE MANAGEMENT MENU ====================
+    if data == "close_admin_menu":
+        try:
+            await query.message.delete()
+        except Exception:
+            try:
+                await query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        return
+
+    # ==================== ADMIN — CHOOSE GET NUMBER DESIGN (MANAGE SERVICES) ====================
+    if data.startswith("svcdesign_") and is_admin(uid):
+        try:
+            n = int(data.replace("svcdesign_", ""))
+        except ValueError:
+            n = 0
+        if n not in SERVICE_DESIGN_NAMES:
+            await query.answer("⚠️ Unknown design.", show_alert=True)
+            return
+        set_service_design(n)
+        services = context.user_data.get("admin_svc_list") or get_cached_services() or []
+        try:
+            await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(_build_manage_services_rows(services)))
+        except Exception:
+            pass
+        await query.answer(f"🎨 GET NUMBER design: {SERVICE_DESIGN_NAMES[n]}")
+        return
+
+    # ==================== ADMIN — TOGGLE A SERVICE ON/OFF (MANAGE SERVICES) ====================
+    if data.startswith("togsvc_") and is_admin(uid):
+        idx = int(data.replace("togsvc_", ""))
+        services = context.user_data.get("admin_svc_list") or get_cached_services()
+        if idx >= len(services):
+            await query.answer("⚠️ Service list changed — please reopen MANAGE SERVICES.", show_alert=True)
+            return
+        sid = services[idx].get("sid", f"Service {idx+1}")
+        currently_enabled = is_service_enabled(sid)
+        set_service_enabled(sid, not currently_enabled)
+        rows = _build_manage_services_rows(services)
+        try:
+            await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+        except Exception:
+            pass
+        await query.answer(f"{'✅ Enabled' if not currently_enabled else '❌ Disabled'}: {sid}")
+        return
+
+    # ==================== ADMIN — TOGGLE A MAIN-MENU BUTTON ON/OFF (MANAGE BUTTONS) ====================
+    if data.startswith("togbtn_") and is_admin(uid):
+        key = data.replace("togbtn_", "")
+        if key not in BUTTON_FLAG_LABELS:
+            await query.answer("⚠️ Unknown button.", show_alert=True)
+            return
+        current = is_button_enabled(key)
+        set_button_enabled(key, not current)
+        rows = _build_manage_buttons_rows()
+        try:
+            await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+        except Exception:
+            pass
+        await query.answer(f"{'✅ Enabled' if not current else '❌ Disabled'}: {BUTTON_FLAG_LABELS[key]}")
+        return
+
+    # ==================== ADMIN — OLD NUMBER DELETE ON/OFF (NUMBER MANAGE) ====================
+    if data == "togoldnum" and is_admin(uid):
+        now_on = not is_old_number_delete_on()
+        set_old_number_delete(now_on)
+        try:
+            await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(_build_number_manage_rows()))
+        except Exception:
+            pass
+        await query.answer(f"{'✅ ON' if now_on else '❌ OFF'}: OLD NUMBER DELETE")
+        return
+
+    # ==================== ADMIN — REFER CONTROL ====================
+    if data == "refctl_tog" and is_admin(uid):
+        now_on = not is_ref_commission_on()
+        set_switch("ref_commission", now_on)
+        try:
+            await query.message.edit_text(_refer_control_text(), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(_build_refer_control_rows()))
+        except Exception:
+            pass
+        await query.answer(f"{'✅ ON' if now_on else '❌ OFF'}: OTP COMMISSION")
+        return
+    if data in ("refctl_bonus", "refctl_comm") and is_admin(uid):
+        key = data.replace("refctl_", "")
+        context.user_data["ref_input"] = key
+        setting, label = _REF_INPUT[key]
+        cur = {"bonus": get_referral_bonus(), "comm": get_ref_commission()}[key]
+        await context.bot.send_message(
+            uid, f"✏️ CURRENT {label}: {cur:.2f} BDT\n\n💵 SEND THE NEW AMOUNT (e.g. 0.50):",
+            reply_markup=cancel_keyboard()
+        )
+        return
+
+    # ==================== ADMIN — NUMBER TEMPLATE V2 ON/OFF (NUMBER MANAGE) ====================
+    if data == "togtplv2" and is_admin(uid):
+        now_on = not is_number_template_v2_on()
+        set_number_template_v2(now_on)
+        try:
+            await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(_build_number_manage_rows()))
+        except Exception:
+            pass
+        await query.answer(f"{'✅ ON' if now_on else '❌ OFF'}: NUMBER TEMPLATE V2")
+        return
+
+    # ==================== ADMIN — TOGGLE A PAYMENT METHOD ON/OFF (PAYMENT SETUP) ====================
+    if data.startswith("togpay_") and is_admin(uid):
+        key = data.replace("togpay_", "")
+        if key not in PAYMENT_METHOD_LABELS:
+            await query.answer("⚠️ Unknown payment method.", show_alert=True)
+            return
+        current = is_payment_method_enabled(key)
+        set_payment_method_enabled(key, not current)
+        rows = _build_payment_management_rows()
+        try:
+            await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+        except Exception:
+            pass
+        await query.answer(f"{'✅ Enabled' if not current else '❌ Disabled'}: {PAYMENT_METHOD_LABELS[key]}")
+        return
+
+    # ==================== ADMIN — MINIMUM WITHDRAW LIMITS (PAYMENT SETUP) ====================
+    if data == "minwd_menu" and is_admin(uid):
+        rows = _build_min_withdraw_menu_rows()
+        try:
+            await query.message.edit_text(
+                "📉 <b>MINIMUM WITHDRAW LIMITS</b>\n\n"
+                "<blockquote>Tap a payment method, then send the new minimum amount for that method only.</blockquote>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(rows)
+            )
+        except Exception:
+            pass
+        return
+
+    if data == "minwd_back" and is_admin(uid):
+        rows = _build_payment_management_rows()
+        try:
+            await query.message.edit_text(
+                "💳 <b>PAYMENT SETUP</b>\n\n"
+                "<blockquote>✅ = shown to users | ❌ = hidden from withdraw list\n"
+                "Tap a payment method to turn it on/off, or tap MINIMUM WITHDRAW LIMITS to set each method's own minimum.</blockquote>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(rows)
+            )
+        except Exception:
+            pass
+        return
+
+    if data.startswith("selminwd_") and is_admin(uid):
+        key = data.replace("selminwd_", "")
+        if key not in PAYMENT_METHOD_LABELS:
+            await query.answer("⚠️ Unknown payment method.", show_alert=True)
+            return
+        await admin_min_withdraw_start(update, context, key)
+        return
+
+    # ==================== LANGUAGE SELECTION (from PROFILE only) ====================
+    if data == "lang_menu":
+        await query.message.reply_text(
+            tr(uid, "lang_select_prompt"),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(tr(uid, "btn_lang_en"), callback_data="set_lang_en", style="primary"),
+                InlineKeyboardButton(tr(uid, "btn_lang_bn"), callback_data="set_lang_bn", style="success"),
+            ]])
+        )
+        return
+
+    if data in ("set_lang_en", "set_lang_bn"):
+        new_lang = "en" if data == "set_lang_en" else "bn"
+        await set_user_lang(uid, new_lang)
+        await query.message.reply_text(tr(uid, "lang_changed"), parse_mode="HTML")
+        # Refresh the bottom keyboard so its button labels switch language too
+        await context.bot.send_message(uid, tr(uid, "menu_prompt"), parse_mode="Markdown", reply_markup=main_keyboard(uid))
+        return
+
+    # CHANGE COUNTRY (NUMBER TEMPLATE V2) — back to the country list of the selected service
+    if data == "change_country":
+        _ranges = context.user_data.get("la_ranges")
+        _idx = context.user_data.get("la_svc_idx")
+        _sid = context.user_data.get("la_sid", "")
+        if _ranges and _idx is not None and _sid:
+            await query.message.edit_text(
+                f"📞 <b>GET NUMBER</b>\n\n"
+                f"<blockquote>📱 Service: <b>{html.escape(_sid)}</b></blockquote>\n"
+                f"<blockquote>🌍 Select your preferred <b>Country</b>:</blockquote>",
+                parse_mode="HTML",
+                reply_markup=_build_countries_keyboard(_ranges, _idx)
+            )
+            return
+        data = "back_services"   # no service context (custom range / link) → service list
+
+    # LIVEACCESS — SERVICE SELECTION
+    if data.startswith("svc_"):
+        idx = int(data.replace("svc_", ""))
+        services = context.user_data.get("la_services", [])
+        if not services:
+            services = get_cached_services()
+            context.user_data["la_services"] = services
+        if idx >= len(services):
+            await query.answer("Service not found. Please try again.", show_alert=True)
+            return
+
+        svc = services[idx]
+        sid = svc.get("sid", "Service")
+        ranges = svc.get("ranges", [])
+
+        if not is_service_enabled(sid):
+            await query.answer("This service is currently disabled.", show_alert=True)
+            return
+
+        if not ranges:
+            await query.answer("No ranges available for this service right now.", show_alert=True)
+            return
+
+        context.user_data["la_svc_idx"] = idx
+        context.user_data["la_sid"] = sid
+        context.user_data["la_ranges"] = ranges
+
+        keyboard = _build_countries_keyboard(ranges, idx)
+        await query.message.edit_text(
+            f"📞 <b>GET NUMBER</b>\n\n"
+            f"<blockquote>📱 Service: <b>{html.escape(sid)}</b></blockquote>\n"
+            f"<blockquote>🌍 Select your preferred <b>Country</b>:</blockquote>",
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+        return
+
+    # LIVEACCESS — RANGE SELECTION
+    if data.startswith("rng_"):
+        idx = int(data.replace("rng_", ""))
+        ranges = context.user_data.get("la_ranges", [])
+        if idx >= len(ranges):
+            await query.answer("Range not found. Please try again.", show_alert=True)
+            return
+
+        range_text = ranges[idx]
+        sid = context.user_data.get("la_sid", "")
+
+        asyncio.create_task(fast_allocate_number(query, context, range_text, sid))
+        return
+
+    # CUSTOM RANGE — user types range manually
+    if data == "custom_range":
+        context.user_data["mode"] = "custom_range"
+        await query.message.edit_text(
+            "⚙️ <b>CUSTOM RANGE</b>\n\n"
+            "<blockquote>📶 Type your custom range.\n"
+            "Example: <code>234XXX</code> or <code>225XXX</code></blockquote>\n\n"
+            "<blockquote>⌨️ Type the range below and Send it:</blockquote>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("◀️ BACK", callback_data="back_services", style="danger")
+            ]])
+        )
+        return
+
+    # LIVEACCESS — BACK TO SERVICES
+    if data == "back_services":
+        services = get_cached_services() or context.user_data.get("la_services", [])
+        disabled = get_disabled_services()
+        services = [s for s in services if s.get("sid") not in disabled]
+        if not services:
+            await query.message.edit_text("❌ Could not load services. Please try again later.")
+            return
+        context.user_data["la_services"] = services
+        keyboard = _build_services_keyboard(services)
+        await query.message.edit_text(
+            "📞 <b>GET NUMBER</b>\n\n"
+            "<blockquote>📱 Select a <b>Service</b> from below:</blockquote>" + _legend_html(),
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+        return
+
+    # SAME RANGE
+    if data == "same_range":
+        r_text = last_range.get(uid)
+        if r_text:
+            # old message: drop NEW NUMBER / CHANGE COUNTRY, keep copy + group buttons
+            try:
+                kept = []
+                _old_rm = query.message.reply_markup
+                for row in (_old_rm.inline_keyboard if _old_rm else []):
+                    nrow = [b for b in row if b.callback_data not in ("same_range", "change_country")]
+                    if nrow:
+                        kept.append(nrow)
+                if not kept:
+                    raise ValueError("no buttons left")
+                await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(kept))
+            except Exception:
+                try:
+                    await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("📢 CHECK OTP GROUP", url=OTP_GROUP_LINK, style="primary")
+                    ]]))
+                except Exception:
+                    pass
+            ok = await process_numbers(update, context, r_text, 1)
+            # OLD NUMBER DELETE (NUMBER MANAGE): remove the previous number message
+            # only after the new number was delivered successfully.
+            if ok and is_old_number_delete_on():
+                try:
+                    await query.message.delete()
+                except Exception as e:
+                    print(f"Old number delete error: {e}")
+        return
+
+    # WITHDRAW
+    if data == "withdraw_start":
+        balance = get_user(uid)['balance']
+        min_withdraw = get_min_withdraw()
+        if balance < min_withdraw:
+            await query.message.reply_text(
+                f"<blockquote>💵 BALANCE: {format_balance(balance)} BDT\n📉 MIN WITHDRAW: {min_withdraw:.0f} BDT</blockquote>",
+                parse_mode="HTML"
+            )
+            return
+        context.user_data["withdraw_mode"] = "select_method"
+        await query.message.reply_text("💳 SELECT YOUR PAYMENT METHOD!", reply_markup=withdraw_method_keyboard())
+        return
+
+    if data == "withdraw_confirm":
+        await process_withdraw_confirm(update, context)
+        return
+
+    if data == "withdraw_cancel":
+        await process_withdraw_cancel(update, context)
+        return
+
+    if data.startswith("admin_approve_"):
+        await admin_approve_withdraw(update, context, data.replace("admin_approve_", ""))
+        return
+
+    if data.startswith("admin_reject_"):
+        await admin_reject_withdraw(update, context, data.replace("admin_reject_", ""))
+        return
+
+    # COPY / MISC CALLBACKS
+    if data.startswith("copy_id_"):
+        await query.answer(f"✅ Copied ID: {data.replace('copy_id_', '')}", show_alert=True)
+        return
+
+    if data.startswith("copy_text_"):
+        await query.answer(f"✅ Copied: {data.replace('copy_text_', '')}", show_alert=True)
+        return
+
+    if data.startswith("my_ref_"):
+        target_uid = data.replace("my_ref_", "")
+        my_referrals = load_referral_data().get(str(target_uid), {}).get("referred", [])
+        content = f"👥 REFERRAL REPORT — {target_uid}\n━━━━━━━━━━━━\nTOTAL: {get_referral_count(target_uid)}\n\n"
+        for i, r_ in enumerate(my_referrals, 1):
+            try:
+                dt_obj = datetime.fromisoformat(r_['time'])
+                content += f"{i}. ID: {r_['id']} | {dt_obj.strftime('%d/%m/%Y %I:%M %p')}\n"
+            except Exception:
+                continue
+        f = io.BytesIO(content.encode())
+        f.name = f"REF_{target_uid}.txt"
+        await context.bot.send_document(chat_id=uid, document=f, caption="✅ **REFERRAL DATA**", parse_mode="Markdown")
+        return
+
+    if data.startswith("full_logs_"):
+        target_uid = data.replace("full_logs_", "")
+        stats = get_user_stats(target_uid)
+        all_logs = load_data(ACTIVITY_LOGS_FILE)
+        user_db = load_data(USER_DATA_FILE)
+        user_info = user_db.get(str(target_uid), {})
+        user_otps = [log for log in all_logs if str(log.get('uid')) == str(target_uid) and log.get('action') == "OTP_RECEIVED"]
+        content = (
+            f"📊 USER DATA REPORT — {target_uid}\n"
+            f"💰 BALANCE: {user_info.get('balance', 0):.2f} BDT\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"TODAY NUMBERS: {stats['today_numbers']}\n"
+            f"TODAY OTPS: {stats['today_otps']}\n"
+            f"7D NUMBERS: {stats['last7d_numbers']}\n"
+            f"7D OTPS: {stats['last7d_otps']}\n"
+            f"TOTAL NUMBERS: {stats['total_numbers']}\n"
+            f"TOTAL OTPS: {stats['total_otps']}\n"
+            f"━━━━━━━━━━━━━━━━━━\n\nOTP LOGS:\n"
+        )
+        for i, log in enumerate(user_otps, 1):
+            try:
+                dt_obj = datetime.fromisoformat(log['timestamp'])
+                d = log.get('details', {})
+                content += f"{i}. {dt_obj.strftime('%d/%m/%Y %I:%M %p')}\n   📞 {d.get('number', 'N/A')}\n   🔑 {d.get('otp', 'N/A')}\n\n"
+            except:
+                continue
+        f = io.BytesIO(content.encode())
+        f.name = f"USER_{target_uid}.txt"
+        await context.bot.send_document(
+            chat_id=uid, document=f,
+            caption=f"✅ <b>DATA FOR USER: <code>{target_uid}</code></b>",
+            parse_mode="HTML"
+        )
+        return
+
+# ==================== MAIN & POST INIT SECTION ====================
+
+async def post_init(application):
+    for _ in range(5):
+        asyncio.create_task(worker())
+    asyncio.create_task(monitor_loop(application))
+    asyncio.create_task(liveaccess_refresh_loop())
+
+
+def main():
+    print(f"🤖 {MIAH_WATERMARK}")
+    app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(16).post_init(post_init).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("get1number", get1number_command))
+    app.add_handler(CommandHandler("searchotp", searchotp_command))
+    app.add_handler(CommandHandler("balance", balance_command))
+    app.add_handler(CommandHandler("profile", profile_command))
+    app.add_handler(CommandHandler("refer", refer_command_slash))
+    app.add_handler(CommandHandler("leaderboard", leaderboard_command_slash))
+
+    app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+
+    print("🚀 BOT RUNNING...")
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
-    load_data()
-    monitoring_threads = []
-    print("🚀 Starting multi-account monitoring...", flush=True)
-    for site_key in ["GROUP", "Fly sms", "Number_Panel", "Bolt", "iVASMS", "MSI", "proton SMS", "IMS", "Roxy SMS", "TimeSMS"]:
-        if SETTINGS.get(site_key, {}).get("enabled"):
-            accounts = get_site_accounts(site_key)
-            for account in accounts:
-                th = Thread(target=start_monitoring_for_account, args=(site_key, account), daemon=True)
-                monitoring_threads.append(th)
-                th.start()
-
-    try:
-        r_del = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true", timeout=15)
-        print(f"🔄 Webhook deleted: {r_del.text}", flush=True)
-        me = bot.get_me()
-        print(f"🤖 Connected Bot: @{me.username} (ID: {me.id})", flush=True)
-    except Exception as e:
-        print(f"⚠️ Telegram connection check error: {e}", flush=True)
-
-    try:
-        bot.set_my_commands([
-            BotCommand("start", "Start the bot"),
-            BotCommand("getnumber", "Get a number"),
-            BotCommand("account", "My account"),
-            BotCommand("help", "Help guide"),
-            BotCommand("withdraw", "Withdraw balance"),
-            BotCommand("hom", "Main menu"),
-            BotCommand("language", "Change language"),
-            BotCommand("bonus", "Bonus system"),
-        ])
-    except Exception as e:
-        print(f"⚠️ Command setup error: {e}", flush=True)
-
-    retry_delay = 5
-    while True:
-        try:
-            print("🚀 Starting Telegram bot polling...", flush=True)
-            bot.infinity_polling(timeout=30, long_polling_timeout=30, skip_pending=True)
-        except Exception as e:
-            print(f"❌ Polling error: {e}", flush=True)
-            time.sleep(retry_delay)
-            retry_delay = min(60, retry_delay * 2)
+    main()
